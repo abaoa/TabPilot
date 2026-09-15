@@ -1,0 +1,36 @@
+谱领航 TabPilot
+Copyright (c) 2026 abaoa
+本项目的原创源代码以 MIT 许可证发布，详见 LICENSE 文件。
+
+本产品捆绑（bundle）了以下第三方组件，各组件按其自身的许可证分发。
+上文的 MIT 许可证仅适用于本项目的原创源代码。
+
+==============================================================================
+1. alphaTab
+   - 文件: vendor/alphaTab.js
+   - 用途: 音乐记谱与吉他六线谱渲染库
+   - 许可证: Mozilla Public License 2.0 (MPL-2.0)
+   - 版权: CoderLine / Daniel Kuschny
+   - 源码: https://github.com/CoderLine/alphaTab
+   - 说明: MPL-2.0 为「文件级弱 copyleft」许可。对 alphaTab.js 的修改必须继续以
+           MPL-2.0 开源；本项目其余代码仍采用 MIT 许可证，二者兼容。
+
+2. Bravura 字体
+   - 文件: vendor/font/Bravura.{otf,woff,woff2}
+   - 用途: alphaTab 使用的 SMuFL 音乐符号字形
+   - 许可证: SIL Open Font License 1.1 (OFL-1.1)
+   - 版权: Steinberg Media Technologies GmbH
+   - 源码: https://github.com/steinbergmedia/bravura
+
+3. Sonivox GM 音色库 (sonivox.sf3)
+   - 文件: vendor/sonivox.sf3
+   - 用途: alphaTab 合成器使用的通用 MIDI 采样库
+   - 许可证: 随 alphaTab 分发（最初来自 Android 开源项目 / Sonic Network 的
+           Sonivox）。再分发前请向上游核实其许可证；若需更严格的合规，建议替换
+           为明确授权的音色库（例如 FluidR3Mono_GM，MIT 许可）。
+==============================================================================
+
+TabPilot bundles third-party software. The MIT License above covers only the
+original source code of this project. Each bundled component retains its own
+license as listed above (alphaTab: MPL-2.0; Bravura: OFL-1.1; Sonivox: please
+verify upstream license).

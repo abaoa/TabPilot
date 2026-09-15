@@ -10,3 +10,9 @@ Thumbs.db
 
 # 本地临时草稿
 *.tmp
+
+# 本地验证临时文件（截图 / 探测页 / 浏览器 profile）
+_shot_*.png
+_verify_*.py
+_probe.html
+_ep*/

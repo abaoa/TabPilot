@@ -60,9 +60,9 @@
 
 | 谱面模式（结构化谱） | 移动端 |
 | --- | --- |
-| ![谱面模式](preview-image.png) | ![移动端](preview-mobile.png) |
+| ![谱面模式](assets/preview-image.png) | ![移动端](assets/preview-mobile.png) |
 
-![图片谱模式](preview-mobile-img.png)
+![图片谱模式](assets/preview-mobile-img.png)
 
 ---
 
@@ -87,31 +87,36 @@
 
 ```text
 TabPilot/
-├── index.html          # 结构化谱模式入口 (Structured score entry)
-├── imageTab.html       # 图片谱模式入口 (Image-tab entry)
-├── app.js              # 结构化谱逻辑 (Structured-score logic)
-├── imageTab.js         # 图片谱逻辑 (Image-tab logic)
-├── main.js             # Electron 桌面主进程 (Electron main process)
-├── manifest.json       # PWA 清单 (PWA manifest)
-├── sw.js               # PWA Service Worker
-├── package.json
-├── icon.ico            # 桌面图标 (Desktop icon)
-├── icon-512.png        # PWA / 应用图标
-├── demo-xihn.jpg       # 示例图片谱 (Demo image tab)
-├── preview*.png        # 预览截图 (Preview screenshots)
+├── src/                # 应用逻辑 (Application logic)
+│   ├── app.js          #   结构化谱逻辑 (Structured-score logic)
+│   ├── imageTab.js     #   图片谱逻辑 (Image-tab logic)
+│   └── main.js         #   Electron 桌面主进程 (Electron main process)
+├── public/             # 前端静态入口 / PWA 根 (Frontend entry / PWA root)
+│   ├── index.html      #   结构化谱模式入口 (Structured score entry)
+│   ├── imageTab.html   #   图片谱模式入口 (Image-tab entry)
+│   ├── manifest.json   #   PWA 清单 (PWA manifest)
+│   ├── sw.js           #   PWA Service Worker
+│   └── icons/          #   图标 (Icons)
+│       ├── icon.ico
+│       └── icon-512.png
+├── assets/             # 示例谱与预览截图 (Demo tab & previews)
+│   ├── demo-xihn.jpg
+│   └── preview*.png
 ├── vendor/             # 第三方本地依赖 (Bundled third-party)
 │   ├── alphaTab.js
 │   ├── sonivox.sf3
 │   └── font/Bravura.{otf,woff,woff2}
+├── package.json        # main 指向 src/main.js
 ├── LICENSE             # MIT
 ├── NOTICE              # 第三方许可声明 (Third-party notices)
+├── README.md
 ├── dist/               # 打包产物（已 gitignore）
 └── node_modules/       # 依赖（已 gitignore）
 ```
 
-> 说明：当前为初期扁平结构，源码、资源、预览图平铺在根目录。后续计划拆分为
-> `src/`、`public/`、`assets/` 等目录（见文末“待办”）。
-> Note: currently a flat layout. A `src/`, `public/`, `assets/` split is planned.
+> PWA 的 `start_url` / `scope` 以 `public/` 为根；本地以 `python -m http.server` 运行后
+> 访问 `http://localhost:8080/public/index.html`。
+> The PWA root is `public/`; served locally via `http://localhost:8080/public/index.html`.
 
 ---
 
@@ -123,8 +128,8 @@ TabPilot/
 cd TabPilot
 python -m http.server 8080
 # 浏览器打开:
-#   谱面模式  → http://localhost:8080/index.html
-#   图片谱模式 → http://localhost:8080/imageTab.html
+#   谱面模式  → http://localhost:8080/public/index.html
+#   图片谱模式 → http://localhost:8080/public/imageTab.html
 ```
 
 > ⚠️ 需通过 `http(s)` 访问（alphaTab 要通过网络加载音色库）；麦克风授权要求

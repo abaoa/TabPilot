@@ -71,7 +71,7 @@ function initTab() {
         enablePlayer: true,
         enableCursor: true,
         enableAutoScroll: true,
-        soundFont: 'vendor/sonivox.sf3',
+        soundFont: '../vendor/sonivox.sf3',
       },
       display: { zoom: 1.0 },
     });

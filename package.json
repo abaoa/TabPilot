@@ -3,7 +3,7 @@
   "productName": "TabPilot",
   "version": "1.0.0",
   "description": "谱领航 TabPilot · 吉他谱自动跟随练习工具（弹到哪跟到哪，谱面高亮 + 放大镜）",
-  "main": "main.js",
+  "main": "src/main.js",
   "author": "WorkBuddy",
   "license": "MIT",
   "scripts": {

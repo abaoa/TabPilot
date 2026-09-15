@@ -2,8 +2,8 @@
 'use strict';
 const CACHE = 'tabpilot-v1';
 const SHELL = [
-  'index.html', 'imageTab.html', 'app.js', 'imageTab.js',
-  'manifest.json', 'icon-512.png', 'demo-xihn.jpg',
+  'index.html', 'imageTab.html', '../src/app.js', '../src/imageTab.js',
+  'manifest.json', 'icons/icon-512.png', '../assets/demo-xihn.jpg',
 ];
 
 self.addEventListener('install', (e) => {

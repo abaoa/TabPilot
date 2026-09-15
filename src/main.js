@@ -7,7 +7,7 @@ const { app, BrowserWindow, protocol, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
-const ROOT = __dirname;
+const ROOT = path.resolve(__dirname, '..');
 
 // 本应用为 2D 界面（SVG/canvas），软件渲染完全够用；
 // 禁用硬件加速 + 进程内 GPU，避免 GPU 驱动/沙箱异常时启动崩溃，提升兼容性
@@ -58,13 +58,13 @@ function createWindow() {
     minWidth: 360,
     minHeight: 500,
     title: '谱领航 TabPilot · 吉他谱跟随',
-    icon: path.join(ROOT, 'icon.ico'),
+    icon: path.join(ROOT, 'public', 'icons', 'icon.ico'),
     autoHideMenuBar: true,
     backgroundColor: '#f6f7fb',
     webPreferences: { contextIsolation: true, sandbox: true },
   });
   win.removeMenu();
-  win.loadURL('app://local/index.html');
+  win.loadURL('app://local/public/index.html');
   return win;
 }
 

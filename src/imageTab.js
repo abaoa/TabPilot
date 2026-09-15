@@ -72,7 +72,7 @@ $('fileInput').onchange = (e) => {
   r.onload = () => loadImage(r.result);
   r.readAsDataURL(f);
 };
-$('btnDemo').onclick = () => loadImage('demo-xihn.jpg');
+$('btnDemo').onclick = () => loadImage('../assets/demo-xihn.jpg');
 
 function loadImage(src) {
   tabImg.onload = () => {
@@ -502,7 +502,7 @@ function drawMag(x, y, w, h) {
 
 /* ---------------- 自检（?autotest=1）/ 演示（?demo=1） ---------------- */
 async function loadDemo() {
-  await new Promise((r) => { tabImg.onload = () => r(); tabImg.src = 'demo-xihn.jpg'; });
+  await new Promise((r) => { tabImg.onload = () => r(); tabImg.src = '../assets/demo-xihn.jpg'; });
   bands = detectBands();
   renderBandList();
   log('img ok: ' + tabImg.naturalWidth + 'x' + tabImg.naturalHeight + ', bands=' + bands.length);

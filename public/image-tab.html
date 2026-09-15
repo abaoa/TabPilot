@@ -7,10 +7,13 @@
   谱图按"行"校准（自动投影识别或手动框选），再按 BPM × 每行小节数展开
   时间轴，行内小节均分推进。
 
+  多页支持：同一首歌可导入多张图片（多页），全曲时间轴跨页拼接，
+  跟随到当前页末尾时自动翻到下一页。
+
   页面结构：
     header.app-header  顶栏（品牌 / 模式切换 / 参数 / 设置）
-    main.app-main      舞台（谱图 + 覆盖层）与侧栏（谱行列表）
-    footer.app-footer  状态栏（模式、当前行、当前小节、行进时间）
+    main.app-main      舞台（谱图 + 覆盖层）与侧栏（页导航 + 谱行列表）
+    footer.app-footer  状态栏（模式、当前页、当前行、当前小节、行进时间）
   ==========================================================================
 -->
 <html lang="zh-CN">
@@ -26,6 +29,42 @@
 <link rel="stylesheet" href="css/layout.css">
 <link rel="stylesheet" href="css/components.css">
 <script src="js/theme.js"></script>
+<!-- 多页导航的局部样式（避免改动 components.css） -->
+<style>
+  .pageNav {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 2px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--sub);
+  }
+  .pageNav .slash { opacity: .55; }
+  .pageNav b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .btn.sm { padding: 4px 9px; font-size: 12px; }
+  .pageStrip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .pageThumb {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    justify-content: center;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .pageThumb.cur {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: #fff;
+  }
+</style>
 </head>
 <body>
 
@@ -55,7 +94,8 @@
     <div class="group">
       <span class="glabel">文件</span>
       <button class="btn primary" id="btnLoad">📂 加载谱图</button>
-      <input type="file" id="fileInput" accept="image/*" style="display:none">
+      <button class="btn" id="btnAdd">➕ 追加页</button>
+      <input type="file" id="fileInput" accept="image/*" multiple style="display:none">
       <button class="btn" id="btnDemo">🖼 示例谱</button>
     </div>
 
@@ -93,6 +133,13 @@
 
   <aside class="app-aside" id="bandPanel">
     <h3>📋 谱行（点击行 = 从该行开始）</h3>
+    <div class="pageNav">
+      <span class="glabel">页</span>
+      <button class="btn sm" id="btnPrevPage" aria-label="上一页">◀</button>
+      <b id="pageNum">0</b><span class="slash">/</span><b id="pageTotal">0</b>
+      <button class="btn sm" id="btnNextPage" aria-label="下一页">▶</button>
+    </div>
+    <div class="pageStrip" id="pageStrip"></div>
     <div id="bandList">
       <div class="tip">加载图片后点「🤖 自动识别谱行」，或用「✌️ 手动框行」在图上依次点击行的上、下边界。</div>
     </div>

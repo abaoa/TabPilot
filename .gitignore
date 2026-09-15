@@ -1,0 +1,12 @@
+# 依赖与打包产物
+node_modules/
+dist/
+_electron_dist_backup/
+
+# 系统 / 日志
+.DS_Store
+*.log
+Thumbs.db
+
+# 本地临时草稿
+*.tmp

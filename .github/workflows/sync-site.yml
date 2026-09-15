@@ -1,0 +1,91 @@
+# 网页版自动同步到个人站点 abaoa-cn
+#
+# 触发时机
+#   · push 到 main 且 public/ 或导出脚本有变动
+#   · 手动触发：GitHub → Actions → Sync web app to abaoa-cn → Run workflow
+#
+# 流程
+#   检出本仓库 + 检出 abaoa-cn → 用 scripts/export-web.mjs 导出到
+#   abaoa-cn/public/tabpilot/ → 有变化则提交推送到 abaoa-cn 的 master
+#   → Vercel 自动构建部署 https://www.abaoa.cn/tabpilot/
+#
+# 前置条件
+#   在仓库 Settings → Secrets and variables → Actions 中添加 SITE_SYNC_TOKEN，
+#   值为对 abaoa/abaoa-cn 有 Contents 读写权限的 Personal Access Token。
+#   详见 docs/WEB-DEPLOY.md。
+
+name: Sync web app to abaoa-cn
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'public/**'
+      - 'scripts/export-web.mjs'
+      - '.github/workflows/sync-site.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: sync-site
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 导出并推送到 abaoa-cn
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: 检查同步令牌
+        id: guard
+        env:
+          TOKEN: ${{ secrets.SITE_SYNC_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 SITE_SYNC_TOKEN，本次跳过同步（详见 docs/WEB-DEPLOY.md）"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 检出 TabPilot
+        if: steps.guard.outputs.skip == 'false'
+        uses: actions/checkout@v4
+        with:
+          path: tabpilot
+
+      - name: 检出 abaoa-cn
+        if: steps.guard.outputs.skip == 'false'
+        uses: actions/checkout@v4
+        with:
+          repository: abaoa/abaoa-cn
+          ref: master
+          token: ${{ secrets.SITE_SYNC_TOKEN }}
+          path: site
+
+      - name: 准备 Node
+        if: steps.guard.outputs.skip == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 导出网页版
+        if: steps.guard.outputs.skip == 'false'
+        run: node tabpilot/scripts/export-web.mjs --out site/public/tabpilot --base /tabpilot
+
+      - name: 提交并推送
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          cd site
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain public/tabpilot)" ]; then
+            echo "网页版无变化，跳过提交"
+            exit 0
+          fi
+          git add -A public/tabpilot
+          git commit -m "chore(tabpilot): 同步网页版 ${SHA:0:7}"
+          git push origin master

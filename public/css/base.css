@@ -1,0 +1,159 @@
+/* ==========================================================================
+ * base.css — 设计令牌（Design Tokens）与基础样式
+ *
+ * 主题机制：
+ *   主题由 <html data-theme="light|dark"> 决定，取值由 js/theme.js 在
+ *   页面早期（<head> 内同步执行）写入，避免刷新时的白屏闪烁。
+ *   用户可选三种模式：light / dark / auto（跟随系统 prefers-color-scheme），
+ *   其中 auto 最终也会被解析成 light 或 dark 落到 data-theme 上。
+ *
+ * 颜色约定：
+ *   --ink / --ink-2 / --sub / --muted  文字层级（强 → 弱）
+ *   --bg / --card / --sunken           背景层级（页面 → 卡片 → 内凹区）
+ *   --paper                            谱面专用底色（深色主题下仍保持纸白，
+ *                                      因为 alphaTab 绘制的音符为深色墨）
+ *   --line / --line-strong             描边层级
+ *   --ok / --warn / --risk / --hl      状态色（正常 / 提醒 / 危险 / 当前音符高亮）
+ * ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* 品牌与语义色 */
+  --brand: #2f6fed;
+  --brand-strong: #1e59d0;
+  --brand-soft: #eaf1ff;
+  --ok: #12a06a;
+  --warn: #d97706;
+  --risk: #d64545;
+  --hl: #e11d48;
+
+  /* 文字层级 */
+  --ink: #141a26;
+  --ink-2: #2c3646;
+  --sub: #5b6678;
+  --muted: #9aa5b8;
+
+  /* 背景与描边 */
+  --bg: #eff2f7;
+  --card: #ffffff;
+  --sunken: #f5f7fa;
+  --paper: #ffffff;
+  --line: #e4e8ef;
+  --line-strong: #d3dae5;
+
+  /* 圆角与阴影 */
+  --r-sm: 8px;
+  --r: 10px;
+  --r-lg: 14px;
+  --r-pill: 999px;
+  --sh-1: 0 1px 2px rgba(16, 24, 40, .05);
+  --sh-2: 0 1px 2px rgba(16, 24, 40, .05), 0 8px 24px rgba(16, 24, 40, .06);
+  --sh-3: 0 12px 34px rgba(16, 24, 40, .18);
+
+  /* 节奏：统一间距，避免各处硬编码 */
+  --gap-xs: 4px;
+  --gap-sm: 7px;
+  --gap: 10px;
+  --gap-lg: 14px;
+}
+
+/* 深色主题：只覆盖令牌，组件样式无需重复适配 */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --brand: #5b90ff;
+  --brand-strong: #7aa7ff;
+  --brand-soft: #1c2740;
+  --ok: #2ec27e;
+  --warn: #f0a63a;
+  --risk: #f2716f;
+  --hl: #ff5d78;
+
+  --ink: #e6eaf2;
+  --ink-2: #c8d0de;
+  --sub: #94a0b4;
+  --muted: #6b7789;
+
+  --bg: #10141b;
+  --card: #171c25;
+  --sunken: #12171f;
+  --paper: #f6f7f9;
+  --line: #2a3140;
+  --line-strong: #38414f;
+
+  --sh-1: 0 1px 2px rgba(0, 0, 0, .4);
+  --sh-2: 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px rgba(0, 0, 0, .35);
+  --sh-3: 0 12px 34px rgba(0, 0, 0, .5);
+}
+
+/* ---------------- 基础重置 ---------------- */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "PingFang SC", "Microsoft YaHei", -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color .2s ease, color .2s ease;
+}
+
+/* ---------------- 滚动条 ---------------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  border-radius: var(--r-pill);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+  background-clip: content-box;
+}
+
+/* ---------------- 通用文本 ---------------- */
+.t-muted {
+  color: var(--muted);
+}
+
+.t-sub {
+  color: var(--sub);
+}
+
+.t-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 屏幕阅读器专用（视觉隐藏，仍可被读屏软件读取） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

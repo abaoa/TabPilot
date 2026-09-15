@@ -3,6 +3,7 @@
   "productName": "TabPilot",
   "version": "1.0.0",
   "identifier": "com.workbuddy.tabpilot",
+  "mainBinaryName": "TabPilot",
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
@@ -19,7 +20,7 @@
         "minHeight": 500,
         "resizable": true,
         "center": true,
-        "backgroundColor": "#f6f7fb"
+        "backgroundColor": "#eff2f7"
       }
     ],
     "security": {
@@ -29,6 +30,8 @@
   "bundle": {
     "active": true,
     "targets": ["msi"],
+    "publisher": "abaoa",
+    "copyright": "Copyright © 2026 abaoa. Licensed under the MIT License.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -14,7 +14,7 @@ Thumbs.db
 # 本地验证临时文件（截图 / 探测页 / 浏览器 profile）
 _shot_*.png
 _verify_*.py
-_probe.html
+_probe*.html
 _ep*/
 
 # Tauri / Rust 构建产物

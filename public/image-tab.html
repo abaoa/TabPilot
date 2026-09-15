@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<!--
+  ==========================================================================
+  image-tab.html — 图片谱模式（光栅谱图：JPG / PNG 截图）
+
+  与谱面模式（index.html）的区别：图片没有小节坐标信息，因此需要先把
+  谱图按"行"校准（自动投影识别或手动框选），再按 BPM × 每行小节数展开
+  时间轴，行内小节均分推进。
+
+  页面结构：
+    header.app-header  顶栏（品牌 / 模式切换 / 参数 / 设置）
+    main.app-main      舞台（谱图 + 覆盖层）与侧栏（谱行列表）
+    footer.app-footer  状态栏（模式、当前行、当前小节、行进时间）
+  ==========================================================================
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#2f6fed" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#10141b" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-512.png">
+<title>谱领航 TabPilot · 图片谱跟随</title>
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/layout.css">
+<link rel="stylesheet" href="css/components.css">
+<script src="js/theme.js"></script>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="topbar">
+    <div class="brand">🎸 谱领航 <span class="tag">TabPilot</span></div>
+
+    <nav class="tabs">
+      <a href="index.html">🎼 谱面模式</a>
+      <span class="on">🖼 图片谱模式</span>
+    </nav>
+
+    <div class="spacer"></div>
+
+    <div class="group">
+      <span class="glabel">参数</span>
+      <span class="lbl">BPM <input id="bpm" type="number" value="72" min="30" max="240" aria-label="速度 BPM"></span>
+      <span class="lbl">拍/小节 <input id="bpb" type="number" value="4" min="1" max="12" aria-label="每小节拍数"></span>
+      <span class="slider">速度<input id="rate" type="range" min="50" max="200" step="5" value="100" aria-label="播放速度"><b id="rateVal">1.0x</b></span>
+    </div>
+
+    <span class="app-ver">v1.0.0</span>
+    <button class="btn icon" id="btnSettings" title="设置" aria-label="设置">⚙️</button>
+  </div>
+
+  <div class="toolbar">
+    <div class="group">
+      <span class="glabel">文件</span>
+      <button class="btn primary" id="btnLoad">📂 加载谱图</button>
+      <input type="file" id="fileInput" accept="image/*" style="display:none">
+      <button class="btn" id="btnDemo">🖼 示例谱</button>
+    </div>
+
+    <div class="group">
+      <span class="glabel">识别</span>
+      <button class="btn" id="btnDetect">🤖 自动识别谱行</button>
+      <button class="btn" id="btnManual">✌️ 手动框行</button>
+      <button class="btn" id="btnClear">🗑 清空</button>
+    </div>
+
+    <div class="group">
+      <span class="glabel">播放</span>
+      <button class="btn primary" id="btnPlay">▶ 开始跟随</button>
+      <button class="btn" id="btnPause">⏸ 暂停</button>
+      <button class="btn" id="btnStop">⏹ 停止</button>
+      <button class="btn" id="btnMetro">🔔 节拍器</button>
+    </div>
+
+    <div class="group">
+      <span class="glabel">视图</span>
+      <button class="btn only-wide" id="btnPanel">☰ 行列表</button>
+      <button class="btn icon" id="btnMag" title="放大镜开关" aria-label="放大镜开关">🔍</button>
+    </div>
+  </div>
+</header>
+
+<main class="app-main">
+  <div class="stage" id="stage">
+    <div id="imgWrap">
+      <img id="tabImg" alt="谱图">
+      <div id="barBox"></div>
+      <div id="scanline"></div>
+    </div>
+  </div>
+
+  <aside class="app-aside" id="bandPanel">
+    <h3>📋 谱行（点击行 = 从该行开始）</h3>
+    <div id="bandList">
+      <div class="tip">加载图片后点「🤖 自动识别谱行」，或用「✌️ 手动框行」在图上依次点击行的上、下边界。</div>
+    </div>
+    <div class="tip" id="tipManual" style="display:none">手动框行中：点击第 <b id="manualStep">1</b> 个边界（上/下）。</div>
+  </aside>
+
+  <!-- 放大跟随窗：canvas 光栅放大当前小节（图片没有矢量信息，直接缩放像素） -->
+  <div class="magnifier" id="magnifier">
+    <div class="mag-title">🔍 放大跟随</div>
+    <button class="mag-x" id="magClose" title="关闭放大镜" aria-label="关闭放大镜">✕</button>
+    <canvas id="magCanvas" width="800" height="380"></canvas>
+  </div>
+</main>
+
+<footer class="app-footer">
+  <div class="chip"><span class="led" id="led"></span><span id="modeText">待机</span></div>
+  <div class="chip">当前行 <b id="bandNum">-</b></div>
+  <div class="chip">当前小节 <b id="barNum">-</b></div>
+  <div class="chip">行进时间 <b id="elapsed">0.0s</b></div>
+  <div class="hint" id="hint">加载谱图 → 识别谱行 → 开始跟随</div>
+</footer>
+
+<script src="js/settings.js"></script>
+<script src="js/image-tab.js"></script>
+<script>
+  'use strict';
+  // 窄屏下侧栏变为抽屉，由「行列表」按钮开合
+  document.getElementById('btnPanel').onclick = function () {
+    var panel = document.getElementById('bandPanel');
+    panel.classList.toggle('open');
+    this.classList.toggle('active', panel.classList.contains('open'));
+  };
+  document.getElementById('magClose').onclick = function () {
+    document.getElementById('btnMag').click();
+  };
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js').catch(function (e) {
+      console.warn('Service Worker 注册失败', e);
+    });
+  }
+</script>
+</body>
+</html>

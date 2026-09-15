@@ -30,11 +30,9 @@
 - **放大镜**：当前位置以 SVG 克隆方式放大显示
   **Magnifier**: the current region is shown enlarged via an SVG clone.
 - **当前音符红色高亮** / **Current note highlighted in red**.
-- **麦克风调试面板**：实时显示音高、电平、置信度
-  **Mic debug panel**: live pitch / level / confidence readout.
 
 ### 模式二：图片谱（图片谱模式）
-### Mode 2: Image Tab (`imageTab.html`)
+### Mode 2: Image Tab (`image-tab.html`)
 
 - 加载谱图（内置示例：Beyond《喜欢你》）
   Load a tab image (demo: Beyond – *喜欢你*).
@@ -49,20 +47,26 @@
 
 ### 通用 · Common
 
-- **PWA + 移动端适配**：可“添加到主屏幕”，手机浏览器也能用
+- **PWA + 移动端适配**：可"添加到主屏幕"，手机浏览器也能用
   **PWA + mobile ready**: add-to-home-screen, works on phone browsers.
-- **Electron 桌面壳**：打包为 Windows 独立 `.exe`
-  **Electron desktop shell**: packaged as a standalone Windows `.exe`.
+- **Tauri 2 桌面壳**：打包为约 5 MB 的 Windows 独立 `.exe`（原 Electron 版为 188 MB）
+  **Tauri 2 desktop shell**: packaged as a standalone Windows `.exe` of ~5 MB (vs. 188 MB with Electron).
+- **主题切换**：浅色 / 深色 / 跟随系统；深色下谱面仍保持纸白以保证对比度
+  **Theme switching**: light / dark / follow system; the score area stays paper-white for contrast.
+- **设置面板**：主题、默认速度、麦克风噪声门、谱面缩放、放大镜默认开关，全部持久化
+  **Settings panel**: theme, default speed, mic gate, score zoom, magnifier default — all persisted.
 
 ---
 
 ## 📸 截图 · Screenshots
 
-| 谱面模式（结构化谱） | 移动端 |
+| 谱面模式 · 浅色 | 谱面模式 · 深色（含设置面板） |
 | --- | --- |
-| ![谱面模式](assets/preview-image.png) | ![移动端](assets/preview-mobile.png) |
+| ![谱面模式](assets/preview-image.png) | ![深色主题](assets/preview-dark.png) |
 
-![图片谱模式](assets/preview-mobile-img.png)
+| 图片谱模式（移动端） | 谱面模式（移动端） |
+| --- | --- |
+| ![图片谱模式](assets/preview-mobile-img.png) | ![移动端](assets/preview-mobile.png) |
 
 ---
 
@@ -87,31 +91,41 @@
 
 ```text
 TabPilot/
-├── src/                # 应用逻辑 (Application logic)
-│   ├── app.js          #   结构化谱逻辑 (Structured-score logic)
-│   ├── imageTab.js     #   图片谱逻辑 (Image-tab logic)
-│   └── main.js         #   Electron 桌面主进程 (Electron main process)
-├── public/             # 前端静态入口 / PWA 根 (Frontend entry / PWA root)
-│   ├── index.html      #   结构化谱模式入口 (Structured score entry)
-│   ├── imageTab.html   #   图片谱模式入口 (Image-tab entry)
-│   ├── manifest.json   #   PWA 清单 (PWA manifest)
-│   ├── sw.js           #   PWA Service Worker
-│   └── icons/          #   图标 (Icons)
-│       ├── icon.ico
-│       └── icon-512.png
-├── assets/             # 示例谱与预览截图 (Demo tab & previews)
-│   ├── demo-xihn.jpg
-│   └── preview*.png
-├── vendor/             # 第三方本地依赖 (Bundled third-party)
-│   ├── alphaTab.js
-│   ├── sonivox.sf3
-│   └── font/Bravura.{otf,woff,woff2}
-├── package.json        # main 指向 src/main.js
-├── LICENSE             # MIT
-├── NOTICE              # 第三方许可声明 (Third-party notices)
-├── README.md
-├── dist/               # 打包产物（已 gitignore）
-└── node_modules/       # 依赖（已 gitignore）
+├── public/                  # 前端 Web 根 / PWA 根（自包含，禁止 ../ 反向引用）
+│   ├── index.html           #   谱面模式入口 (Structured score entry)
+│   ├── image-tab.html       #   图片谱模式入口 (Image-tab entry)
+│   ├── css/                 #   样式三层：令牌 → 布局 → 控件
+│   │   ├── base.css         #     设计令牌、主题变量、基础重置
+│   │   ├── layout.css       #     应用骨架（顶栏 / 舞台 / 侧栏 / 状态栏）
+│   │   └── components.css   #     控件、浮层、设置抽屉
+│   ├── js/
+│   │   ├── theme.js         #     主题早期注入（防首屏闪烁）
+│   │   ├── settings.js      #     设置持久化 + 设置抽屉
+│   │   ├── app.js           #     谱面模式业务（渲染 / 跟随 / 放大镜）
+│   │   └── image-tab.js     #     图片谱业务（校准 / 时间轴 / 放大镜）
+│   ├── manifest.json        #   PWA 清单
+│   ├── sw.js                #   PWA Service Worker
+│   ├── assets/              #   页面运行时资源（示例谱图）
+│   ├── icons/               #   PWA 与页面图标
+│   └── vendor/              #   第三方前端依赖（勿改）
+│       ├── alphaTab.js
+│       ├── sonivox.sf3
+│       └── font/Bravura.{otf,woff,woff2}
+├── src-tauri/               # Tauri 2 桌面 / 移动壳 (Rust)
+│   ├── tauri.conf.json      #   窗口、打包、版本、图标、rc 信息
+│   ├── build.rs             #   构建脚本（生成 Windows 版本资源）
+│   ├── src/{main,lib}.rs    #   Rust 入口与应用构建
+│   ├── capabilities/        #   权限声明（最小化）
+│   └── icons/               #   各平台图标（含 iOS / Android）
+├── docs/                    # 项目文档
+│   ├── ARCHITECTURE.md      #   架构、数据流、跟随算法
+│   ├── BUILD.md             #   环境、构建、产物、rc 字段映射
+│   └── STYLE.md             #   命名与代码规范
+├── assets/                  # README 预览截图（不参与打包）
+├── package.json             # Tauri CLI 脚本
+├── LICENSE                  # MIT
+├── NOTICE                   # 第三方许可声明
+└── README.md
 ```
 
 > PWA 的 `start_url` / `scope` 以 `public/` 为根；本地以 `python -m http.server` 运行后
@@ -128,8 +142,8 @@ TabPilot/
 cd TabPilot
 python -m http.server 8080
 # 浏览器打开:
-#   谱面模式  → http://localhost:8080/public/index.html
-#   图片谱模式 → http://localhost:8080/public/imageTab.html
+#   谱面模式   → http://localhost:8080/public/index.html
+#   图片谱模式 → http://localhost:8080/public/image-tab.html
 ```
 
 > ⚠️ 需通过 `http(s)` 访问（alphaTab 要通过网络加载音色库）；麦克风授权要求
@@ -137,20 +151,35 @@ python -m http.server 8080
 > Serve over `http(s)`; the microphone requires a **secure context**
 > (localhost or https). Opening via `file://` disables mic + soundfont.
 
-### Electron 桌面（开发）
+### Tauri 桌面（开发 / 生产）
 
 ```bash
-npm install
-npm start            # 以开发模式启动桌面应用
+npm install                        # 安装 Tauri CLI
+npm run dev                        # 开发模式（热重载）
+npm run build                      # 生产构建
 ```
+
+环境准备、产物路径、exe 版本资源（rc）字段映射与常见问题见 **[docs/BUILD.md](docs/BUILD.md)**。
+Environment setup, artifact paths, exe version-resource mapping and troubleshooting: **docs/BUILD.md**.
 
 ---
 
-## 📦 打包桌面版（Windows exe） · Build Desktop
+## 📦 打包桌面版（Windows） · Build Desktop
 
 ```bash
-npm run dist         # 产物: dist/TabPilot-win32-x64/TabPilot.exe
+npm run build
+# 可执行文件 : src-tauri/target/release/TabPilot.exe      （约 5 MB）
+# MSI 安装包 : src-tauri/target/release/bundle/msi/TabPilot_1.0.0_x64_en-US.msi（约 3.8 MB）
 ```
+
+exe 属性（版本信息）由 `src-tauri/tauri.conf.json` 自动生成：
+
+| 属性 | 值 |
+| --- | --- |
+| 产品名称 / 文件说明 ProductName / FileDescription | TabPilot |
+| 公司 CompanyName | abaoa |
+| 版权 LegalCopyright | Copyright © 2026 abaoa. Licensed under the MIT License. |
+| 文件版本 / 产品版本 FileVersion / ProductVersion | 1.0.0 |
 
 ---
 
@@ -175,8 +204,19 @@ npm run dist         # 产物: dist/TabPilot-win32-x64/TabPilot.exe
 ## 📌 待办 · TODO
 
 - [x] 重构目录结构（统一到单一自包含 `public/` Web 根）
-- [x] 桌面壳迁移到 Tauri 2（体积 188 MB → 5.12 MB）
+- [x] 桌面壳迁移到 Tauri 2（体积 188 MB → 约 5 MB）
+- [x] 样式体系化（设计令牌 + 三层样式表）
+- [x] 主题切换（浅色 / 深色 / 跟随系统）与设置面板
+- [x] 补齐项目文档（架构、构建、命名规范）
 - [ ] 补充更多示例谱与单元测试
 - [ ] 英文界面切换 / i18n
 - [ ] macOS / Linux 打包（Tauri 已支持，需在对应平台构建）
 - [ ] 移动端打包（Android 需 SDK cmdline-tools + NDK；iOS 需 macOS + Xcode）
+
+---
+
+## 📚 文档 · Docs
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 模块划分、数据流、跟随算法
+- [docs/BUILD.md](docs/BUILD.md) — 环境、构建、产物、rc 字段、移动端权限
+- [docs/STYLE.md](docs/STYLE.md) — 目录职责、命名与代码注释规范

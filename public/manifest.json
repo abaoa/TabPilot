@@ -6,6 +6,8 @@
   "scope": ".",
   "display": "standalone",
   "orientation": "any",
+  "lang": "zh-CN",
+  "categories": ["music", "education", "utilities"],
   "background_color": "#f6f8fb",
   "theme_color": "#2f6fed",
   "icons": [

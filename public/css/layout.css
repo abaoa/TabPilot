@@ -1,0 +1,318 @@
+/* ==========================================================================
+ * layout.css — 应用骨架布局
+ *
+ * 页面统一为三层纵向结构（flex 列）：
+ *   <header>  顶栏：品牌 / 模式切换 / 参数与工具条
+ *   <main>    舞台：谱面渲染区（.stage）+ 可选侧栏（aside）
+ *   <footer>  状态栏：运行模式、小节、置信度、输入电平等
+ *
+ * 缩放策略：header / footer 固定高度（内容自适应），main 占据剩余空间并
+ * 内部滚动，从而保证窗口任意尺寸下控件始终可见。
+ * ========================================================================== */
+
+/* ---------------- 顶栏 ---------------- */
+.app-header {
+  flex: 0 0 auto;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  padding: var(--gap-sm) var(--gap-lg) var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-sm);
+  z-index: 20;
+  box-shadow: var(--sh-1);
+  transition: background-color .2s ease, border-color .2s ease;
+}
+
+/* 第一行：品牌 + 模式切换 + 全局参数 */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  font-size: 16px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  letter-spacing: .01em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.brand .tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand);
+  background: var(--brand-soft);
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+}
+
+/* 模式切换（谱面模式 / 图片谱模式） */
+.tabs {
+  display: flex;
+  gap: 3px;
+  background: var(--sunken);
+  padding: 3px;
+  border-radius: var(--r-pill);
+}
+
+.tabs a,
+.tabs span {
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 5px 13px;
+  border-radius: var(--r-pill);
+  color: var(--sub);
+  text-decoration: none;
+  transition: color .15s, background-color .15s;
+  white-space: nowrap;
+}
+
+.tabs a:hover {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.tabs .on {
+  background: var(--card);
+  color: var(--brand);
+  box-shadow: var(--sh-1);
+}
+
+/* 顶栏弹性占位：把后续内容推到右侧 */
+.spacer {
+  flex: 1;
+  min-width: 6px;
+}
+
+.app-ver {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* 第二行：按功能分组的工具条 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  flex-wrap: wrap;
+}
+
+/* 分组胶囊：把同类控件收纳在一起，视觉上降低工具条密度 */
+.group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px var(--gap-sm) 3px 9px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  flex-wrap: nowrap;
+}
+
+.glabel {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: .04em;
+  margin-right: 1px;
+  white-space: nowrap;
+}
+
+/* ---------------- 舞台 ---------------- */
+.app-main {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+}
+
+/* 谱面容器：浅色纸张底色，深色主题下保持纸白以保证音符对比度 */
+.stage {
+  flex: 1;
+  overflow: auto;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-2);
+  position: relative;
+}
+
+/* alphaTab 挂载点（谱面模式）
+ * ⚠️ 不要用 absolute + inset 定位：alphaTab 初始化时会把宿主元素的行内样式
+ * 改写为 position:relative，若父级是 flex 容器，该元素会被当作 flex item
+ * 收缩到内容宽度（谱面被压成一列）。这里让 flex 布局直接把它撑满即可。 */
+#alphatab {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-2);
+}
+
+/* 加载失败提示层 */
+#fallback {
+  position: absolute;
+  inset: 12px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--sub);
+  font-size: 14px;
+  text-align: center;
+  padding: 24px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+/* ---------------- 侧栏（图片谱：谱行列表 / 设置抽屉） ---------------- */
+.app-aside {
+  flex: 0 0 auto;
+  width: 262px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-2);
+  overflow-y: auto;
+  padding: var(--gap-lg);
+  transition: background-color .2s ease, border-color .2s ease;
+}
+
+.app-aside h3 {
+  font-size: 12px;
+  margin: 0 0 var(--gap);
+  color: var(--sub);
+  font-weight: 700;
+  letter-spacing: .02em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ---------------- 状态栏 ---------------- */
+.app-footer {
+  flex: 0 0 auto;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+  padding: 9px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12.5px;
+  flex-wrap: wrap;
+  transition: background-color .2s ease, border-color .2s ease;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  color: var(--sub);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chip b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 响应式 ---------------- */
+@media (max-width: 900px) {
+  .app-header {
+    padding: var(--gap-sm) 9px 9px;
+    gap: var(--gap-sm);
+  }
+
+  .brand {
+    font-size: 14px;
+  }
+
+  .brand .tag,
+  .app-ver {
+    display: none;
+  }
+
+  /* 隐藏弹性占位，让参数组与设置按钮自然换行，避免设置按钮被挤成孤行 */
+  .topbar .spacer {
+    display: none;
+  }
+
+  .topbar .group {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  /* 工具条在窄屏横向滚动，保证所有按钮可达 */
+  .toolbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+
+  .toolbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .group {
+    flex: 0 0 auto;
+    padding: 3px 6px 3px 8px;
+    border-radius: 11px;
+  }
+
+  .glabel {
+    display: none;
+  }
+
+  .app-main {
+    gap: 0;
+    padding: 8px;
+  }
+
+  .app-footer {
+    padding: var(--gap-sm) var(--gap);
+    gap: var(--gap);
+    font-size: 11.5px;
+  }
+
+  .hint {
+    display: none;
+  }
+
+  /* 侧栏在窄屏变为右侧抽屉 */
+  .app-aside {
+    position: absolute;
+    right: 8px;
+    top: 8px;
+    bottom: 8px;
+    width: 250px;
+    z-index: 40;
+    box-shadow: -8px 0 26px rgba(16, 24, 40, .16);
+    transform: translateX(calc(100% + 18px));
+    transition: transform .22s;
+  }
+
+  .app-aside.open {
+    transform: none;
+  }
+}

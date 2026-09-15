@@ -1,0 +1,622 @@
+/* ==========================================================================
+ * components.css — 可复用控件与浮层
+ *
+ * 收录内容：
+ *   1. 表单控件     按钮 / 下拉 / 数字输入 / 滑杆 / 开关 / 分段选择
+ *   2. 状态指示     指示灯(led) / 电平条(meter)
+ *   3. 谱面浮层     放大镜 / 谱行覆盖层 / 当前小节框 / 扫描线
+ *   4. 设置抽屉     遮罩 + 右侧抽屉 + 字段行
+ *
+ * 所有颜色均取自 base.css 的设计令牌，新增组件时不要写死颜色。
+ * ========================================================================== */
+
+/* ---------------------------------------------------------------- 表单控件 */
+select,
+button,
+input {
+  font: inherit;
+  touch-action: manipulation;
+}
+
+.btn,
+select,
+input[type='number'],
+input[type='text'] {
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: border-color .15s, background-color .15s, color .15s, box-shadow .15s;
+}
+
+.btn:hover {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+}
+
+.btn:active {
+  transform: translateY(.5px);
+}
+
+/* 主操作：BPM 滚动 / 开始跟随 */
+.btn.primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(47, 111, 237, .28);
+}
+
+.btn.primary:hover {
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+  color: #fff;
+}
+
+/* 选中态：当前正在运行的模式 */
+.btn.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+
+.btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* 图标按钮（设置、关闭等），方形以便对齐 */
+.btn.icon {
+  padding: 6px 8px;
+  justify-content: center;
+}
+
+select {
+  max-width: 180px;
+}
+
+input[type='number'] {
+  width: 50px;
+  padding: 5px 6px;
+  text-align: center;
+  font-size: 12.5px;
+}
+
+/* 滑杆 + 数值显示 */
+.slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--sub);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.slider b {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  min-width: 34px;
+}
+
+input[type='range'] {
+  width: 76px;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
+/* 普通行内标签（图片谱的 BPM / 拍号） */
+.lbl {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--sub);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 分段选择器（主题：浅色 / 深色 / 跟随系统） */
+.seg {
+  display: inline-flex;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 2px;
+  gap: 2px;
+}
+
+.seg button {
+  border: none;
+  background: transparent;
+  color: var(--sub);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: .15s;
+}
+
+.seg button:hover {
+  color: var(--brand);
+}
+
+.seg button.on {
+  background: var(--brand);
+  color: #fff;
+}
+
+/* 开关 */
+.switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+
+.switch i {
+  position: absolute;
+  inset: 0;
+  background: var(--line-strong);
+  border-radius: var(--r-pill);
+  transition: .18s;
+  pointer-events: none;
+}
+
+.switch i::after {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 2px;
+  top: 2px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: var(--sh-1);
+  transition: .18s;
+}
+
+.switch input:checked + i {
+  background: var(--brand);
+}
+
+.switch input:checked + i::after {
+  transform: translateX(18px);
+}
+
+/* ------------------------------------------------------------- 状态指示器 */
+.led {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  transition: .2s;
+  flex: 0 0 auto;
+}
+
+.led.ok {
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+.led.warn {
+  background: var(--warn);
+}
+
+.led.bad {
+  background: var(--risk);
+}
+
+.meter {
+  width: 110px;
+  height: 7px;
+  border-radius: 6px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+.meter > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--warn), var(--ok));
+  transition: width .12s;
+}
+
+.meter.brand > i {
+  background: linear-gradient(90deg, var(--brand), var(--ok));
+}
+
+/* --------------------------------------------------------------- 放大镜浮层 */
+.magnifier {
+  position: fixed;
+  right: 18px;
+  bottom: 64px;
+  width: 380px;
+  height: 180px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--sh-3);
+  background: var(--card);
+  overflow: hidden;
+  display: none;
+  z-index: 50;
+}
+
+.magnifier.on {
+  display: block;
+}
+
+.magnifier .mag-title {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sub);
+  z-index: 2;
+  background: var(--card);
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+}
+
+.mag-x {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 3;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--sub);
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.mag-x:hover {
+  color: var(--risk);
+  border-color: var(--risk);
+}
+
+#magContent {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  background: var(--paper);
+}
+
+#magContent svg {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+#magCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 当前音符高亮：alphaTab 渲染的 SVG text 无 fill 属性，可用 CSS 覆盖 */
+.at-hl text {
+  fill: var(--hl) !important;
+}
+
+/* -------------------------------------------------- 图片谱：谱行与小节覆盖层 */
+#imgWrap {
+  position: relative;
+  margin: 0 auto;
+  transform-origin: top center;
+}
+
+#tabImg {
+  display: block;
+  max-width: 100%;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.band {
+  position: absolute;
+  border: 1px dashed rgba(47, 111, 237, .45);
+  background: rgba(47, 111, 237, .04);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.band:hover {
+  background: rgba(47, 111, 237, .1);
+}
+
+/* 当前小节高亮框 */
+#barBox {
+  position: absolute;
+  border: 2px solid var(--hl);
+  background: rgba(225, 29, 72, .12);
+  border-radius: 4px;
+  display: none;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .6);
+}
+
+/* 行内进度扫描线 */
+#scanline {
+  position: absolute;
+  left: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--hl), var(--warn));
+  display: none;
+  pointer-events: none;
+  opacity: .85;
+}
+
+/* 谱行列表项 */
+.bandItem {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  font-size: 12.5px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: .15s;
+  background: var(--card);
+}
+
+.bandItem:hover {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.bandItem.cur {
+  border-color: var(--hl);
+  background: rgba(225, 29, 72, .05);
+}
+
+.bandItem b {
+  flex: 1;
+  font-weight: 600;
+}
+
+.bandItem input[type='number'] {
+  width: 46px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.bandItem .del {
+  border: none;
+  background: transparent;
+  color: var(--risk);
+  padding: 2px 6px;
+  font-size: 13px;
+  box-shadow: none;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.bandItem .del:hover {
+  color: #fff;
+  background: var(--risk);
+}
+
+.tip {
+  font-size: 11.5px;
+  color: var(--sub);
+  line-height: 1.7;
+  margin: 8px 0;
+}
+
+#tipManual {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------- 设置抽屉 */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 14, 22, .42);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s;
+  z-index: 60;
+}
+
+.overlay.on {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 340px;
+  max-width: 92vw;
+  background: var(--card);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 40px rgba(0, 0, 0, .22);
+  transform: translateX(100%);
+  transition: transform .24s ease;
+  z-index: 61;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer.on {
+  transform: none;
+}
+
+.drawer-head {
+  flex: 0 0 auto;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawer-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  flex: 1;
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 16px 20px;
+}
+
+.drawer-foot {
+  flex: 0 0 auto;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-section {
+  margin-bottom: 18px;
+}
+
+.settings-section h4 {
+  margin: 14px 0 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+/* 字段行：左说明、右控件 */
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: 9px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.field:last-child {
+  border-bottom: none;
+}
+
+.field-text {
+  min-width: 0;
+}
+
+.field-text .field-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.field-text .field-desc {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+.field-ctl {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 关于区 */
+.about-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 5px 0;
+  color: var(--sub);
+}
+
+.about-line b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.link {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------ 响应式 */
+@media (max-width: 900px) {
+  .btn {
+    padding: 6px 10px;
+    font-size: 12.5px;
+  }
+
+  select {
+    max-width: 140px;
+    font-size: 12.5px;
+  }
+
+  input[type='range'] {
+    width: 56px;
+  }
+
+  .slider b {
+    min-width: 28px;
+  }
+
+  .meter {
+    width: 64px;
+  }
+
+  .magnifier {
+    right: 8px;
+    bottom: 54px;
+    width: min(74vw, 330px);
+    height: 126px;
+  }
+
+  /* 窄屏隐藏非关键控件（缩放滑杆、行列表按钮等） */
+  .only-wide {
+    display: none !important;
+  }
+}

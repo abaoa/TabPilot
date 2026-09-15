@@ -8,7 +8,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-packager . TabPilot --platform=win32 --arch=x64 --out=dist --overwrite --app-bundle-id=com.workbuddy.tabpilot --app-version=1.0.0 --icon=icon.ico --ignore=\"^/dist$\" --ignore=\"^/node_modules$\""
+    "dist": "electron-packager . TabPilot --platform=win32 --arch=x64 --out=dist --overwrite --app-bundle-id=com.workbuddy.tabpilot --app-version=1.0.0 --icon=public/icons/icon.ico --ignore=\"^/dist$\" --ignore=\"^/node_modules$\""
   },
   "devDependencies": {
     "electron": "^33.2.0",

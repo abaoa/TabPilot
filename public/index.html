@@ -106,12 +106,32 @@
   document.getElementById('magClose').onclick = function () {
     document.getElementById('btnMag').click();
   };
-  // PWA：注册 Service Worker（file:// 下不支持，故仅在 http(s) 场景注册）
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  // PWA：仅在真正的 http(s) 站点注册 Service Worker。
+  // ⚠️ 桌面壳（Tauri）内一律不注册，并清理历史遗留：
+  //    壳用的是内部资产域 http://tauri.localhost，Service Worker 发出的网络请求
+  //    不会经过 Tauri 资产协议的拦截；而 Chromium 会把 *.localhost 解析到回环地址，
+  //    于是请求落到 127.0.0.1:80 —— 那里常驻着本机加速/代理类工具（如 FastGithub），
+  //    会返回 JSON 错误页并污染缓存，表现为界面直接显示一段错误 JSON。
+  (function () {
+    if (!('serviceWorker' in navigator)) return;
+    var isShell = location.protocol === 'tauri:' ||
+                  /(^|\.)tauri\.localhost$/i.test(location.hostname);
+    if (isShell) {
+      navigator.serviceWorker.getRegistrations()
+        .then(function (rs) { rs.forEach(function (r) { r.unregister(); }); })
+        .catch(function () {});
+      if (window.caches && caches.keys) {
+        caches.keys().then(function (ks) {
+          ks.forEach(function (k) { caches.delete(k); });
+        }).catch(function () {});
+      }
+      return;
+    }
+    if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
     navigator.serviceWorker.register('sw.js').catch(function (e) {
       console.warn('Service Worker 注册失败', e);
     });
-  }
+  })();
 </script>
 </body>
 </html>

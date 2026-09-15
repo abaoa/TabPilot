@@ -120,7 +120,8 @@ TabPilot/
 ├── docs/                    # 项目文档
 │   ├── ARCHITECTURE.md      #   架构、数据流、跟随算法
 │   ├── BUILD.md             #   环境、构建、产物、rc 字段映射
-│   └── STYLE.md             #   命名与代码规范
+│   ├── STYLE.md             #   命名与代码规范
+│   └── TROUBLESHOOTING.md   #   已定位的运行时故障与根因
 ├── assets/                  # README 预览截图（不参与打包）
 ├── package.json             # Tauri CLI 脚本
 ├── LICENSE                  # MIT
@@ -220,3 +221,4 @@ exe 属性（版本信息）由 `src-tauri/tauri.conf.json` 自动生成：
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 模块划分、数据流、跟随算法
 - [docs/BUILD.md](docs/BUILD.md) — 环境、构建、产物、rc 字段、移动端权限
 - [docs/STYLE.md](docs/STYLE.md) — 目录职责、命名与代码注释规范
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — 运行时故障排查（如界面显示 `tauri.localhost:80` JSON 报错）

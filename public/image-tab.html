@@ -128,11 +128,28 @@
   document.getElementById('magClose').onclick = function () {
     document.getElementById('btnMag').click();
   };
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  // 与 index.html 一致：桌面壳（tauri:// 或 tauri.localhost）内不注册 Service Worker，
+  // 并清理历史遗留注册与缓存（原因见 index.html 中的说明）。
+  (function () {
+    if (!('serviceWorker' in navigator)) return;
+    var isShell = location.protocol === 'tauri:' ||
+                  /(^|\.)tauri\.localhost$/i.test(location.hostname);
+    if (isShell) {
+      navigator.serviceWorker.getRegistrations()
+        .then(function (rs) { rs.forEach(function (r) { r.unregister(); }); })
+        .catch(function () {});
+      if (window.caches && caches.keys) {
+        caches.keys().then(function (ks) {
+          ks.forEach(function (k) { caches.delete(k); });
+        }).catch(function () {});
+      }
+      return;
+    }
+    if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
     navigator.serviceWorker.register('sw.js').catch(function (e) {
       console.warn('Service Worker 注册失败', e);
     });
-  }
+  })();
 </script>
 </body>
 </html>

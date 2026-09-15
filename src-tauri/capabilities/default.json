@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "TabPilot 默认能力：仅开放基础核心权限。麦克风由系统 WebView 在运行时向用户申请，不在此处静默授权。",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

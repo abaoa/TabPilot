@@ -16,3 +16,7 @@ _shot_*.png
 _verify_*.py
 _probe.html
 _ep*/
+
+# Tauri / Rust 构建产物
+src-tauri/target/
+src-tauri/gen/schemas/

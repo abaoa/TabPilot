@@ -78,8 +78,8 @@
   Following: OTW-lite score following (chroma alignment + hysteresis + debounce).
 - **PWA**：Service Worker + Web App Manifest
   PWA: Service Worker + Web App Manifest.
-- **桌面壳**：Electron + electron-packager，自定义 `app://` 协议绕过 `file://` 限制
-  Desktop: Electron + electron-packager, custom `app://` scheme to bypass `file://` limits.
+- **桌面 / 移动壳**：Tauri 2（Rust + 系统 WebView），一套前端同时产出桌面与移动端
+  Desktop / mobile shell: Tauri 2 (Rust + system WebView) — one frontend for desktop and mobile.
 
 ---
 
@@ -174,7 +174,9 @@ npm run dist         # 产物: dist/TabPilot-win32-x64/TabPilot.exe
 
 ## 📌 待办 · TODO
 
-- [ ] 重构目录结构（`src/` 逻辑、`public/` 前端、`assets/` 资源）
+- [x] 重构目录结构（统一到单一自包含 `public/` Web 根）
+- [x] 桌面壳迁移到 Tauri 2（体积 188 MB → 5.12 MB）
 - [ ] 补充更多示例谱与单元测试
 - [ ] 英文界面切换 / i18n
-- [ ] 跨平台打包（macOS / Linux）
+- [ ] macOS / Linux 打包（Tauri 已支持，需在对应平台构建）
+- [ ] 移动端打包（Android 需 SDK cmdline-tools + NDK；iOS 需 macOS + Xcode）

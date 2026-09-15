@@ -184,6 +184,22 @@ exe 属性（版本信息）由 `src-tauri/tauri.conf.json` 自动生成：
 
 ---
 
+## 🌐 网页版部署 · Web Deployment
+
+线上地址：**https://www.abaoa.cn/tabpilot/**
+
+`public/` 是自包含的纯静态前端，推送到 `main` 后 GitHub Actions 会自动导出到个人站点仓库并触发部署：
+
+```bash
+# 本地手动导出（可选，通常无需执行）
+npm run export:web          # → ../abaoa-cn/public/tabpilot/
+```
+
+- 自动同步需配置一次 `SITE_SYNC_TOKEN`（对 abaoa-cn 有写权限的 PAT），未配置时 workflow 会跳过而非失败。
+- 完整说明、令牌配置步骤与排错见 [docs/WEB-DEPLOY.md](docs/WEB-DEPLOY.md)。
+
+---
+
 ## ⚖️ 许可证与第三方声明 · License & Third-party
 
 - 本项目原创代码采用 **MIT 许可证**（见 `LICENSE`）。
@@ -209,6 +225,7 @@ exe 属性（版本信息）由 `src-tauri/tauri.conf.json` 自动生成：
 - [x] 样式体系化（设计令牌 + 三层样式表）
 - [x] 主题切换（浅色 / 深色 / 跟随系统）与设置面板
 - [x] 补齐项目文档（架构、构建、命名规范）
+- [x] 网页版自动同步到个人站点（GitHub Actions + 导出脚本）
 - [ ] 补充更多示例谱与单元测试
 - [ ] 英文界面切换 / i18n
 - [ ] macOS / Linux 打包（Tauri 已支持，需在对应平台构建）
@@ -220,5 +237,6 @@ exe 属性（版本信息）由 `src-tauri/tauri.conf.json` 自动生成：
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 模块划分、数据流、跟随算法
 - [docs/BUILD.md](docs/BUILD.md) — 环境、构建、产物、rc 字段、移动端权限
+- [docs/WEB-DEPLOY.md](docs/WEB-DEPLOY.md) — 网页版自动同步到个人站点、令牌配置、排错
 - [docs/STYLE.md](docs/STYLE.md) — 目录职责、命名与代码注释规范
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — 运行时故障排查（如界面显示 `tauri.localhost:80` JSON 报错）

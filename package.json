@@ -13,7 +13,8 @@
     "android:dev": "tauri android dev",
     "android:build": "tauri android build",
     "ios:init": "tauri ios init",
-    "ios:dev": "tauri ios dev"
+    "ios:dev": "tauri ios dev",
+    "export:web": "node scripts/export-web.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"

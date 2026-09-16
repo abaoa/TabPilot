@@ -3,10 +3,16 @@
  *
  * 为什么图片谱需要校准：
  *   JPG/PNG 只有像素，没有"小节坐标"这类结构化信息。因此流程是
- *     ① 载入谱图
+ *     ① 载入谱图（支持同一首歌多张图片 = 多页）
  *     ② 识别谱行（水平投影找六线谱线簇 → 聚类成行，并检测竖直小节线求每行小节数）
  *     ③ 按 BPM × 每行小节数展开时间轴，行内小节均分推进
  *     ④ 行内高亮当前小节框 + 扫描线，右下放大镜光栅放大当前小节
+ *
+ * 多页模型：
+ *   pages[i] = { img, src, w, h, bands:[...] }
+ *   `bands` 始终指向「当前页」的谱行数组（pages[curPage].bands 的引用），
+ *   识别 / 列表 / 绘制等原有逻辑因此无需改动即可作用于当前页。
+ *   全曲时间轴 = 所有页的 bands 依次拼接；跟到当前页末行末小节时自动翻到下一页。
  *
  * 关键坐标约定：bands 中的 y0/y1/x0/x1 均为"图片原始像素"坐标；
  * 显示缩放由 #imgWrap 的 zoom 统一处理，覆盖层作为其子元素自动跟随，
@@ -26,6 +32,15 @@ const scanline = $('scanline');
 /* ------------------------------------------------------------------ 状态 */
 /** 谱行集合：{ y0, y1, x0, x1, bars, sTop, sBot }（图片原始像素） */
 let bands = [];
+/**
+ * 多页支持：pages[i] = { img, src, w, h, bands:[...] }
+ * `bands` 始终指向「当前页」的谱行数组（pages[curPage].bands 的引用），
+ * 这样识别/列表/绘制等原有逻辑无需改动即可作用于当前页。
+ */
+let pages = [];
+let curPage = 0;
+/** 文件导入模式：'replace' 清空后载入，'append' 追加到现有页之后 */
+let loadMode = 'replace';
 /** 手动框行模式与已点击的边界点 */
 let manualMode = false;
 let manualPts = [];
@@ -40,7 +55,7 @@ let t0 = 0;
 let rate = 1.0;
 /** 帧推进定时器 */
 let timer = null;
-/** 当前行 / 当前小节索引 */
+/** 当前行 / 当前小节索引（页内） */
 let curBand = -1;
 let curBar = -1;
 /** 图片显示缩放（双击在 100% ↔ 放大间切换） */
@@ -96,30 +111,70 @@ function clickTick(accent) {
 
 /* ---------------------------------------------------------------- 图片加载 */
 
-$('btnLoad').onclick = () => $('fileInput').click();
+$('btnLoad').onclick = () => { loadMode = 'replace'; $('fileInput').click(); };
+$('btnAdd').onclick = () => { loadMode = 'append'; $('fileInput').click(); };
 
 $('fileInput').onchange = (e) => {
-  const f = e.target.files[0];
-  if (!f) return;
-  const r = new FileReader();
-  r.onload = () => loadImage(r.result);
-  r.readAsDataURL(f);
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+  if (loadMode === 'replace') { pages = []; curPage = 0; bands = []; stop(); }
+  const isAppend = loadMode === 'append';
+  const before = pages.length;
+  files.forEach((f, idx) => {
+    const r = new FileReader();
+    // 替换模式：只把第一张设为当前显示页；追加模式：全部追加，不切换显示
+    const makeCurrent = !isAppend && idx === 0;
+    r.onload = () => loadImageData(r.result, makeCurrent, f.name);
+    r.onerror = () => setHint('读取文件失败：' + f.name);
+    r.readAsDataURL(f);
+  });
+  if (isAppend && before) {
+    setHint('正在追加 ' + files.length + ' 页…追加完成后共 ' + (before + files.length) + ' 页');
+  }
   e.target.value = '';   // 允许重复选择同一个文件
 };
 
-$('btnDemo').onclick = () => loadImage('assets/demo-xihn.jpg');
+$('btnDemo').onclick = () => {
+  pages = []; curPage = 0; bands = []; stop();
+  loadImageData('assets/demo-xihn.jpg', true);
+};
 
-/** 载入谱图并重置校准结果 */
-function loadImage(src) {
-  tabImg.onload = () => {
-    bands = [];
-    stop();
-    layout();
-    renderBandList();
-    setLed('', '图片已加载');
-    setHint('点「🤖 自动识别谱行」识别谱面行，或「✌️ 手动框行」逐行框选');
+/**
+ * 载入一张谱图：预加载到 Image 对象，作为新的一页加入 pages。
+ * @param {string}  src       图片地址（DataURL 或相对路径）
+ * @param {boolean} current   是否立即设为当前显示页
+ * @param {string}  [name]    原始文件名（仅用于失败提示）
+ */
+function loadImageData(src, current, name) {
+  const im = new Image();
+  im.onload = () => {
+    const pg = { img: im, src, w: im.naturalWidth, h: im.naturalHeight, bands: [] };
+    pages.push(pg);
+    if (current || pages.length === 1) switchPageDisplay(pages.length - 1);
+    renderPageNav();
+    setLed('', '图片已加载（共 ' + pages.length + ' 页）');
+    setHint('点「🤖 自动识别谱行」识别当前页谱行，或「✌️ 手动框行」逐行框选');
   };
-  tabImg.src = src;
+  im.onerror = () => {
+    renderPageNav();
+    setHint('图片加载失败（格式可能不受支持，请用 JPG/PNG）：' + (name || String(src).slice(0, 40)));
+  };
+  im.src = src;
+}
+
+/** 切换显示到指定页：更新当前页引用、重设 <img> 源并重建覆盖层 */
+function switchPageDisplay(pi) {
+  if (pi < 0 || pi >= pages.length) return;
+  curPage = pi;
+  bands = pages[pi].bands;
+  tabImg.onload = () => {
+    layout();
+    drawBands();
+    renderBandList();
+    if (!playing && pages[curPage].bands.length) showPosition(0, 0);   // 停播时给个预览高亮
+  };
+  tabImg.src = pages[pi].src;
+  renderPageNav();
 }
 
 /**
@@ -140,9 +195,10 @@ window.addEventListener('resize', layout);
 
 $('btnDetect').onclick = () => {
   if (!tabImg.naturalWidth) { setHint('请先加载谱图'); return; }
-  bands = detectBands();
+  pages[curPage].bands = detectBands();
+  bands = pages[curPage].bands;
   renderBandList();
-  setLed('ok', '已识别 ' + bands.length + ' 行');
+  setLed('ok', '已识别 ' + bands.length + ' 行（第 ' + (curPage + 1) + ' 页）');
   setHint('检查右侧行列表：可删除误检行、修改每行小节数，然后点「▶ 开始跟随」');
 };
 
@@ -371,7 +427,7 @@ tabImg.addEventListener('click', (e) => {
   // 非框行模式：点击谱行 = 从该行开始
   if (bands.length) {
     const bi = bands.findIndex((b) => y >= b.y0 && y <= b.y1);
-    if (bi >= 0) seek(bi);
+    if (bi >= 0) seekBand(bi);
   }
 });
 
@@ -409,7 +465,7 @@ function renderBandList() {
   });
 
   el.querySelectorAll('.bandItem').forEach((it) => {
-    it.onclick = () => seek(+it.dataset.i);
+    it.onclick = () => seekBand(+it.dataset.i);
   });
 
   drawBands();
@@ -429,6 +485,44 @@ function drawBands() {
   }
 }
 
+/* -------------------------------------------------------------- 页导航 UI */
+
+/**
+ * 渲染页导航：页码、上/下一页按钮状态、缩略图条。
+ * 缩略图用各页已加载 Image 绘制到小 canvas；点击 = 跳到该页。
+ */
+function renderPageNav() {
+  const total = pages.length;
+  $('pageTotal').textContent = total;
+  $('pageNum').textContent = total ? (curPage + 1) : 0;
+  $('btnPrevPage').disabled = curPage <= 0;
+  $('btnNextPage').disabled = curPage >= total - 1;
+
+  // 空态：没有页时不显示空胶片条，改为舞台居中引导
+  const empty = $('stageEmpty');
+  if (empty) empty.style.display = total ? 'none' : '';
+
+  const strip = $('filmstrip');
+  if (!strip) return;
+  strip.style.display = total ? '' : 'none';
+  strip.innerHTML = '';
+  if (!total) return;
+  pages.forEach((pg, i) => {
+    const b = document.createElement('button');
+    b.className = 'thumb' + (i === curPage ? ' cur' : '');
+    b.title = '第 ' + (i + 1) + ' 页（点击切换）';
+    const im = document.createElement('img');
+    im.src = pg.src;
+    im.alt = '第 ' + (i + 1) + ' 页';
+    b.appendChild(im);
+    const tag = document.createElement('span');
+    tag.textContent = (i + 1);
+    b.appendChild(tag);
+    b.onclick = () => gotoPage(i);
+    strip.appendChild(b);
+  });
+}
+
 /* ------------------------------------------------------------------ 时间轴 */
 
 /** 某一行的时长（ms）= 小节数 × 每小节拍数 × 一拍时长 */
@@ -436,30 +530,51 @@ function bandDur(b) {
   return (b.bars * parseInt($('bpb').value, 10) * 60000) / parseInt($('bpm').value, 10);
 }
 
-/** 全曲总时长（ms） */
+/** 单页总时长（ms） */
+function pageDur(p) {
+  return p.bands.reduce((s, b) => s + bandDur(b), 0);
+}
+
+/** 全曲总时长（ms）= 所有页之和 */
 function totalDur() {
-  return bands.reduce((s, b) => s + bandDur(b), 0);
+  return pages.reduce((s, p) => s + pageDur(p), 0);
+}
+
+/** 第 pi 页之前的累计时长（ms） */
+function durBeforePage(pi) {
+  let s = 0;
+  for (let i = 0; i < pi; i++) s += pageDur(pages[i]);
+  return s;
 }
 
 /**
- * 音乐时间(ms) → 位置信息
- * @returns {{band:number, bar:number, p:number, g:number}|null}
- *   band 行索引、bar 行内小节索引、p 行内进度(0–1)、g 全曲进度(0–1)
+ * 音乐时间(ms) → 位置信息（跨页）
+ * @returns {{page:number, band:number, bar:number, p:number, g:number}|null}
+ *   page 页索引、band 页内行索引、bar 行内小节索引、p 行内进度(0–1)、g 全曲进度(0–1)
  */
 function locate(t) {
   let acc = 0;
-  for (let i = 0; i < bands.length; i++) {
-    const d = bandDur(bands[i]);
-    if (t < acc + d || i === bands.length - 1) {
-      const p = Math.max(0, Math.min(1, (t - acc) / d));
-      return {
-        band: i,
-        bar: Math.min(bands[i].bars - 1, Math.floor(p * bands[i].bars)),
-        p,
-        g: t / Math.max(1, totalDur()),
-      };
+  for (let pi = 0; pi < pages.length; pi++) {
+    const pd = pageDur(pages[pi]);
+    if (t < acc + pd || pi === pages.length - 1) {
+      const bs = pages[pi].bands;
+      let a2 = acc;
+      for (let bi = 0; bi < bs.length; bi++) {
+        const d = bandDur(bs[bi]);
+        if (t < a2 + d || bi === bs.length - 1) {
+          const p = Math.max(0, Math.min(1, (t - a2) / d));
+          return {
+            page: pi,
+            band: bi,
+            bar: Math.min(bs[bi].bars - 1, Math.floor(p * bs[bi].bars)),
+            p,
+            g: t / Math.max(1, totalDur()),
+          };
+        }
+        a2 += d;
+      }
     }
-    acc += d;
+    acc += pd;
   }
   return null;
 }
@@ -473,27 +588,30 @@ function musicNow() {
 
 /** 开始/继续跟随 */
 function play() {
-  if (!bands.length) { setHint('请先识别或手动框选谱行'); return; }
+  if (!pages.length || !pages.some((p) => p.bands.length)) {
+    setHint('请先识别或手动框选谱行');
+    return;
+  }
   if (playing && !paused) return;
   if (paused) { resume(); return; }
-  start(0);
+  startAtTime(elapsedBase);   // 从当前位置（或起点）继续
 }
 
-/** 从头或指定行开始播放 */
-function start(fromBand) {
+/** 从指定音乐时间(ms)开始播放（跨页时间轴） */
+function startAtTime(t0ms) {
   stop(false);
   if (metro) {
     if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
     if (ac.state === 'suspended') ac.resume();
   }
-  elapsedBase = bands.slice(0, fromBand).reduce((s, b) => s + bandDur(b), 0);
+  elapsedBase = t0ms;
   t0 = performance.now();
   lastBeat = -1;
   playing = true;
   paused = false;
   timer = setInterval(tick, 40);
   setLed('ok', '图片谱跟随中');
-  setHint('跟随中：红色框 = 当前小节，右下放大镜实时放大。点击任意行可跳转。');
+  setHint('跟随中：红色框 = 当前小节，右下放大镜实时放大。跨页时自动翻页，点击任意行可跳转。');
   $('btnPlay').textContent = '▶ 跟随中…';
 }
 
@@ -512,16 +630,30 @@ function resume() {
   setLed('ok', '图片谱跟随中');
 }
 
-/** 跳转到指定行；未播放时仅做位置预览 */
-function seek(bandIdx) {
-  if (!bands.length) return;
-  if (playing || paused) {
-    start(bandIdx);
-    return;
-  }
+/** 跳转到当前页的指定行；播放中则改从该行时间开始 */
+function seekBand(bandIdx) {
+  const bs = pages[curPage] ? pages[curPage].bands : [];
+  if (!bs.length) return;
+  bandIdx = Math.max(0, Math.min(bs.length - 1, bandIdx));
+  const t = durBeforePage(curPage) + bs.slice(0, bandIdx).reduce((s, b) => s + bandDur(b), 0);
+  if (playing || paused) { startAtTime(t); return; }
   showPosition(bandIdx, 0);
-  elapsedBase = bands.slice(0, bandIdx).reduce((s, b) => s + bandDur(b), 0);
-  $('bandNum').textContent = (bandIdx + 1) + ' / ' + bands.length;
+  elapsedBase = t;
+  $('bandNum').textContent = (bandIdx + 1) + ' / ' + bs.length;
+}
+
+/** 跳转到指定页首行（页导航用） */
+function gotoPage(pi) {
+  if (pi < 0 || pi >= pages.length) return;
+  switchPageDisplay(pi);
+  const t = durBeforePage(pi);
+  if (playing || paused) { startAtTime(t); }
+  else {
+    elapsedBase = t;
+    if (pages[pi].bands.length) showPosition(0, 0);
+    setLed('', '已跳到第 ' + (pi + 1) + ' 页');
+  }
+  renderPageNav();
 }
 
 /** 停止播放。reset 为 true 时回到起点并清空状态灯 */
@@ -543,12 +675,28 @@ function stop(reset = true) {
 $('btnPlay').onclick = play;
 $('btnPause').onclick = pause;
 $('btnStop').onclick = () => stop();
+$('btnPrevPage').onclick = () => gotoPage(curPage - 1);
+$('btnNextPage').onclick = () => gotoPage(curPage + 1);
+
+// 「更多」菜单：收纳低频操作（示例谱/节拍器/放大镜/行列表），降低工具栏密度
+const morePop = $('morePop');
+$('btnMore').onclick = (e) => {
+  e.stopPropagation();
+  const open = morePop.classList.toggle('open');
+  $('btnMore').setAttribute('aria-expanded', open ? 'true' : 'false');
+};
+document.addEventListener('click', (e) => {
+  if (!morePop.contains(e.target)) morePop.classList.remove('open');
+});
 $('btnClear').onclick = () => {
-  bands = [];
+  pages = []; curPage = 0; bands = [];
   stop();
+  tabImg.removeAttribute('src');   // 清掉图上内容，回到空态引导
+  barBox.style.display = 'none';
   renderBandList();
+  renderPageNav();
   setLed('', '待机');
-  setHint('已清空谱行，请重新加载谱图或识别谱行');
+  setHint('已清空全部页与谱行，请重新加载谱图或识别谱行');
 };
 
 /* ------------------------------------------------------------ 视图与交互 */
@@ -587,6 +735,7 @@ function tick() {
   }
   const loc = locate(t);
   if (!loc) return;
+  if (loc.page !== curPage) switchPageDisplay(loc.page);   // 跨页自动翻页
   showPosition(loc.band, loc.bar, loc.p);
   $('elapsed').textContent = (t / 1000).toFixed(1) + 's';
 
@@ -603,6 +752,7 @@ function tick() {
 function showPosition(bandIdx, barIdx, p = 0) {
   const b = bands[bandIdx];
   if (!b) return;
+  if (!tabImg.naturalWidth) return;   // 正在翻页、图片尚未就绪时跳过本帧绘制
   curBand = bandIdx;
   curBar = barIdx;
 
@@ -629,9 +779,12 @@ function showPosition(bandIdx, barIdx, p = 0) {
   }
 
   $('bandNum').textContent = (bandIdx + 1) + ' / ' + bands.length;
+  $('pageNum').textContent = (curPage + 1) + ' / ' + pages.length;
   $('barNum').textContent = (barIdx + 1) + ' / ' + b.bars;
 
   document.querySelectorAll('.bandItem').forEach((it, i) => it.classList.toggle('cur', i === bandIdx));
+  const ft = document.querySelectorAll('#filmstrip .thumb');
+  ft.forEach((it, i) => it.classList.toggle('cur', i === curPage));
 
   if (magOn) drawMag(x, b.y0, w, b.y1 - b.y0);
 }
@@ -703,4 +856,5 @@ window.addEventListener('DOMContentLoaded', () => {
   window.TPSettings.onChange(applySettings);
   applySettings(window.TPSettings.all());
   layout();
+  renderPageNav();
 });

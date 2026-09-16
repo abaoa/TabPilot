@@ -109,6 +109,24 @@
   }
   .menu-pop.open { display: flex; }
   .menu-pop .btn.block { width: 100%; justify-content: flex-start; text-align: left; }
+
+  /* 未载入谱图时隐藏空 <img>（否则会显示破图占位），并给出居中引导 */
+  #tabImg:not([src]) { display: none; }
+  .stageEmpty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 0 24px;
+    text-align: center;
+    color: var(--sub, #667085);
+    pointer-events: none;
+  }
+  .stageEmpty b { font-size: 15px; color: var(--ink, #1f2430); }
+  .stageEmpty span { font-size: 12.5px; line-height: 1.7; max-width: 420px; }
 </style>
 </head>
 <body>
@@ -171,6 +189,10 @@
 
 <main class="app-main">
   <div class="stage" id="stage">
+    <div id="stageEmpty" class="stageEmpty">
+      <b>还没有载入谱图</b>
+      <span>点「📂 加载谱图」可一次性多选同一首歌的多张图片（每张 = 一页，按顺序拼成一条时间轴）；<br>也可以从「⋯ 更多 → 🖼 示例谱」先试玩一下。</span>
+    </div>
     <div id="imgWrap">
       <img id="tabImg" alt="谱图">
       <div id="barBox"></div>

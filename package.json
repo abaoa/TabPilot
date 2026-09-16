@@ -14,9 +14,11 @@
     "android:build": "tauri android build",
     "ios:init": "tauri ios init",
     "ios:dev": "tauri ios dev",
-    "export:web": "node scripts/export-web.mjs"
+    "export:web": "node scripts/export-web.mjs",
+    "verify:image": "node scripts/verify-image-tab.mjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4"
+    "@tauri-apps/cli": "^2.11.4",
+    "jsdom": "^30.0.1"
   }
 }

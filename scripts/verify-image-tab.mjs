@@ -142,13 +142,66 @@ window.addEventListener('load', function () {
         renderBandList();
         ok('行列表含小节区间文字 m1', /m1/.test(document.getElementById('bandList').innerHTML));
 
-        document.getElementById('btnClear').click();
-        ok('「清空」后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');
+        // ===== 新增：滚动 / 翻页双模式 =====
+        window.TPSettings.set('viewMode', 'scroll');
+        ok('滚动模式：scrollView 显示', getComputedStyle(document.getElementById('scrollView')).display !== 'none');
+        ok('滚动模式：imgWrap 隐藏', getComputedStyle(document.getElementById('imgWrap')).display === 'none');
+        var sp = document.querySelectorAll('#scrollView .scrollPage');
+        ok('滚动模式：两页纵向拼接出 2 个 scrollPage', sp.length === 2, 'n=' + sp.length);
+        ok('滚动模式：两页谱行(3+2=5)全部绘出 .band',
+          document.querySelectorAll('#scrollView .ov .band').length === 5,
+          'n=' + document.querySelectorAll('#scrollView .ov .band').length);
 
-        var pre = document.createElement('pre');
-        pre.id = 'VERIFY';
-        pre.textContent = R.join('\\n');
-        document.body.appendChild(pre);
+        gotoPage(1);
+        var ph = document.getElementById('barBox').parentNode;
+        ok('滚动模式：跳页后播放头移入第 2 页覆盖层',
+          ph.classList.contains('ov') && ph.dataset.page === '1',
+          'page=' + (ph.dataset && ph.dataset.page));
+        ok('滚动模式：跳页后 curPage=1', curPage === 1, 'curPage=' + curPage);
+
+        window.TPSettings.set('viewMode', 'flip');
+        ok('翻页模式：imgWrap 恢复显示', getComputedStyle(document.getElementById('imgWrap')).display !== 'none');
+        ok('翻页模式：scrollView 隐藏', getComputedStyle(document.getElementById('scrollView')).display === 'none');
+
+        // ===== 新增：工程文件导入 / 导出 =====
+        var proj = {
+          app: 'TabPilot', version: 1,
+          settings: { bpm: 90, bpb: 3, startMeasure: 2, rate: 80 },
+          pages: [
+            { src: 'pa.jpg', bands: [
+              { x0: 0, y0: 0, x1: 800, y1: 100, bars: 3 },
+              { x0: 0, y0: 120, x1: 800, y1: 220, bars: 4 },
+            ] },
+            { src: 'pb.jpg', bands: [{ x0: 0, y0: 0, x1: 800, y1: 100, bars: 2 }] },
+          ],
+        };
+        applyProject(proj);
+        win.setTimeout(function () {
+          ok('工程导入：载入 2 页', pages.length === 2, 'pages=' + pages.length);
+          ok('工程导入：第 1 页恢复 2 行', pages[0].bands.length === 2, 'n=' + pages[0].bands.length);
+          ok('工程导入：第 2 页恢复 1 行', pages[1].bands.length === 1, 'n=' + pages[1].bands.length);
+          ok('工程导入：起始小节生效', window.TPSettings.get('startMeasure') === 2,
+            'sm=' + window.TPSettings.get('startMeasure'));
+          ok('工程导入：BPM 生效', parseInt(document.getElementById('bpm').value, 10) === 90,
+            'bpm=' + document.getElementById('bpm').value);
+
+          var out = buildProject();
+          ok('工程导出：带 app 标识', !!out && out.app === 'TabPilot');
+          ok('工程导出：2 页且谱行被序列化',
+            out.pages.length === 2 && out.pages[0].bands.length === 2 && out.pages[1].bands.length === 1,
+            'p=' + out.pages.length);
+          ok('工程导出：谱行字段完整(x0/y0/x1/y1/bars)',
+            out.pages[0].bands[0].x0 === 0 && out.pages[0].bands[0].y1 === 100 && out.pages[0].bands[0].bars === 3);
+
+          document.getElementById('btnClear').click();
+          ok('清空后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');
+          ok('清空后滚动视图无残留页', document.querySelectorAll('#scrollView .scrollPage').length === 0);
+
+          var pre = document.createElement('pre');
+          pre.id = 'VERIFY';
+          pre.textContent = R.join('\\n');
+          document.body.appendChild(pre);
+        }, 80);
       }, 350);
     }, 900);
   });

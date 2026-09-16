@@ -35,6 +35,7 @@ window.TPSettings = (function () {
     magnifier: false,   // 是否默认开启放大镜
     showHints: true,    // 是否显示底部操作提示
     startMeasure: 1,    // 图片谱：全局起始小节号（影响谱行旁的小节标注）
+    viewMode: 'flip',   // 图片谱视图：翻页 flip | 滚动 scroll（整谱纵向长图自动滚动）
   };
 
   var state = load();

@@ -127,6 +127,32 @@
   }
   .stageEmpty b { font-size: 15px; color: var(--ink, #1f2430); }
   .stageEmpty span { font-size: 12.5px; line-height: 1.7; max-width: 420px; }
+
+  /* 视图模式分段切换（翻页 / 滚动） */
+  .viewSeg { display: inline-flex; gap: 2px; background: var(--line, #e5e7eb); padding: 2px; border-radius: 9px; }
+  .viewSeg .btn { border: none; background: transparent; padding: 4px 10px; box-shadow: none; }
+  .viewSeg .btn.on { background: var(--panel, #fff); box-shadow: 0 1px 3px rgba(0,0,0,.16); color: var(--brand, #2f6fed); }
+  .viewSeg .btn.on:hover { background: var(--panel, #fff); }
+
+  /* 滚动模式：整谱纵向长图，连续自动滚动 */
+  #scrollView { display: none; position: relative; width: 100%; padding: 4px 0 80px; }
+  #scrollView .scrollPage { position: relative; margin: 0 auto 14px; }
+  #scrollView .scrollPage > img {
+    display: block; width: 100%; height: auto;
+    border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,.22); background: #fff;
+  }
+  #scrollView .ov { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #scrollView .band {
+    position: absolute; border: 1px dashed rgba(47,111,237,.45);
+    background: rgba(47,111,237,.04); border-radius: 4px;
+  }
+  #scrollView .measureTag {
+    position: absolute; transform: translateY(-100%); margin-top: -2px;
+    font-size: 11px; font-weight: 700; color: #fff; background: rgba(47,111,237,.92);
+    padding: 1px 5px; border-radius: 6px; pointer-events: none; white-space: nowrap; z-index: 4;
+  }
+  #scrollView .band.cur { border-color: var(--hl, #e11d48); background: rgba(225,29,72,.12); }
+  #scrollView .measureTag.cur { background: rgba(225,29,72,.95); transform: translateY(-100%) scale(1.12); }
 </style>
 </head>
 <body>
@@ -183,14 +209,25 @@
       <button class="btn sm" id="btnLoopB" title="把当前位置设为循环终点 B">ⓑ</button>
     </div>
 
+    <div class="group">
+      <span class="glabel">视图</span>
+      <div class="viewSeg" id="viewSeg" role="group" aria-label="视图模式">
+        <button class="btn sm on" id="viewFlip" data-mode="flip">🔀 翻页</button>
+        <button class="btn sm" id="viewScroll" data-mode="scroll">📜 滚动</button>
+      </div>
+    </div>
+
     <div class="menu">
       <button class="btn" id="btnMore" aria-haspopup="true" aria-expanded="false">⋯ 更多</button>
       <div class="menu-pop" id="morePop" role="menu">
         <button class="btn block" id="btnDemo">🖼 示例谱</button>
+        <button class="btn block" id="btnSaveProj" title="把谱图与已框选/识别的谱行存成一个工程文件">💾 保存工程</button>
+        <button class="btn block" id="btnOpenProj" title="打开工程文件，恢复谱图与谱行，免重框">📂 打开工程</button>
         <button class="btn block" id="btnMetro">🔔 节拍器</button>
         <button class="btn block" id="btnMag">🔍 放大镜</button>
         <button class="btn block" id="btnPanel">☰ 行列表</button>
       </div>
+      <input type="file" id="projInput" accept=".json,application/json" style="display:none">
     </div>
   </div>
 </header>
@@ -207,6 +244,7 @@
       <div id="scanline"></div>
       <div id="measureLabel" style="display:none"></div>
     </div>
+    <div id="scrollView" aria-label="整谱滚动视图"></div>
     <div class="filmstrip" id="filmstrip" aria-label="多页缩略图"></div>
   </div>
 

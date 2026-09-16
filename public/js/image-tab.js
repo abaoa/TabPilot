@@ -70,6 +70,16 @@ let lastBeat = -1;
 let loopOn = false;
 let loopA = null;   // 循环起点（音乐时间 ms）
 let loopB = null;   // 循环终点（音乐时间 ms）
+/**
+ * 视图模式：
+ *   'flip'   翻页 —— 一次只显示一页，跨页时自动翻页（原行为）
+ *   'scroll' 滚动 —— 把所有页纵向拼成一条长图，连续自动滚动跟随
+ */
+let viewMode = 'flip';
+/** 滚动模式下每页的覆盖层容器 / 顶部偏移 / 显示缩放（由 buildScrollView 维护） */
+let pageOv = [];
+let pageTop = [];
+let pageScale = [];
 
 /* ---------------------------------------------------------------- 工具函数 */
 
@@ -145,32 +155,68 @@ $('btnDemo').onclick = () => {
 
 /**
  * 载入一张谱图：预加载到 Image 对象，作为新的一页加入 pages。
- * @param {string}  src       图片地址（DataURL 或相对路径）
- * @param {boolean} current   是否立即设为当前显示页
- * @param {string}  [name]    原始文件名（仅用于失败提示）
+ *
+ * 页对象在调用时同步入栈（而不是等 onload），这样一次多选多张图片时
+ * 页序稳定 —— 若等到 onload 才入栈，解码快慢不同会导致页序错乱。
+ *
+ * @param {string}  src         图片地址（DataURL 或相对路径）
+ * @param {boolean} current     是否立即设为当前显示页
+ * @param {string}  [name]      原始文件名（仅用于失败提示）
+ * @param {Array}   [preset]    预设谱行（打开工程文件时用它免去重新框选）
  */
-function loadImageData(src, current, name) {
-  const im = new Image();
-  im.onload = () => {
-    const pg = { img: im, src, w: im.naturalWidth, h: im.naturalHeight, bands: [] };
-    pages.push(pg);
-    if (current || pages.length === 1) switchPageDisplay(pages.length - 1);
+function loadImageData(src, current, name, preset) {
+  const pg = {
+    img: new Image(),
+    src,
+    w: 0,
+    h: 0,
+    bands: Array.isArray(preset) ? preset.map((b) => ({
+      x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, bars: b.bars,
+    })) : [],
+  };
+  pages.push(pg);
+  const idx = pages.length - 1;
+
+  pg.img.onload = () => {
+    pg.w = pg.img.naturalWidth;
+    pg.h = pg.img.naturalHeight;
+    if (viewMode === 'scroll') buildScrollView();   // 滚动视图需要重排
+    if (current || idx === 0) switchPageDisplay(idx);
     renderPageNav();
     setLed('', '图片已加载（共 ' + pages.length + ' 页）');
     setHint('点「🤖 自动识别谱行」识别当前页谱行，或「✌️ 手动框行」逐行框选');
   };
-  im.onerror = () => {
+  pg.img.onerror = () => {
     renderPageNav();
     setHint('图片加载失败（格式可能不受支持，请用 JPG/PNG）：' + (name || String(src).slice(0, 40)));
   };
-  im.src = src;
+  pg.img.src = src;
 }
 
-/** 切换显示到指定页：更新当前页引用、重设 <img> 源并重建覆盖层 */
+/** 打开工程文件用：带着已保存的谱行识别结果载页 */
+function loadProjectPage(src, presetBands, current) {
+  return loadImageData(src, current, null, presetBands);
+}
+
+/**
+ * 切换显示到指定页：更新当前页引用并重建覆盖层。
+ * 翻页模式：换 #tabImg 的源；滚动模式：全页都在 DOM 里，只滚动到该页并移动播放头。
+ */
 function switchPageDisplay(pi) {
   if (pi < 0 || pi >= pages.length) return;
   curPage = pi;
   bands = pages[pi].bands;
+
+  if (viewMode === 'scroll') {
+    attachPlayhead(pageOv[pi]);
+    drawBandsScroll();
+    renderBandList();
+    scrollToPage(pi);
+    if (!playing && bands.length) showPosition(0, 0);
+    renderPageNav();
+    return;
+  }
+
   tabImg.onload = () => {
     layout();
     drawBands();
@@ -181,11 +227,153 @@ function switchPageDisplay(pi) {
   renderPageNav();
 }
 
+/* ------------------------------------------------- 滚动模式：整谱纵向长图 */
+
+/** 滚动视图的可用内容宽度（jsdom 等无布局环境下也能拿到合理值） */
+function scrollContentWidth() {
+  const sv = $('scrollView');
+  const w = sv.clientWidth || (stage.clientWidth - 16) || 800;
+  return Math.max(120, w);
+}
+
+/**
+ * 重建滚动视图：把所有页纵向拼接成一条长图。
+ * 同时记录每页的覆盖层容器、纵向偏移与显示缩放，供绘制与自动滚动使用。
+ */
+function buildScrollView() {
+  const sv = $('scrollView');
+  sv.innerHTML = '';
+  pageOv = [];
+  pageTop = [];
+  pageScale = [];
+  if (!pages.length) return;
+
+  const cw = scrollContentWidth();
+  const GAP = 14;                      // 页间距
+  let top = 0;
+  pages.forEach((pg, i) => {
+    const nw = pg.w || 1000;
+    const nh = pg.h || 1400;
+    const scale = cw / nw;
+    const dispH = nh * scale;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'scrollPage';
+    wrap.dataset.page = i;
+    wrap.style.height = dispH + 'px';
+
+    const im = document.createElement('img');
+    im.src = pg.src;
+    im.alt = '第 ' + (i + 1) + ' 页';
+    wrap.appendChild(im);
+
+    const ov = document.createElement('div');
+    ov.className = 'ov';
+    ov.dataset.page = i;                 // 播放头移入后据此判断它当前落在哪一页
+    ov.style.width = cw + 'px';
+    ov.style.height = dispH + 'px';
+    wrap.appendChild(ov);
+
+    sv.appendChild(wrap);
+    pageOv[i] = ov;
+    pageTop[i] = top;
+    pageScale[i] = scale;
+    top += dispH + GAP;
+  });
+  sv.style.minHeight = top + 'px';
+  // 整块重建后把播放头挂回当前页（resize、追加页等都会走到这里）
+  if (pageOv[curPage]) attachPlayhead(pageOv[curPage]);
+}
+
+/**
+ * 滚动模式下的谱行绘制：所有页的行都画出来（整谱长图），
+ * 覆盖层坐标按各页显示缩放换算（bands 里存的是图片原始像素）。
+ */
+function drawBandsScroll() {
+  pages.forEach((pg, pi) => {
+    const ov = pageOv[pi];
+    if (!ov) return;
+    // 只清谱行/标注，不清播放头（barBox 等已被移到本覆盖层内）
+    ov.querySelectorAll('.band, .measureTag').forEach((n) => n.remove());
+    const s = pageScale[pi] || 1;
+    pg.bands.forEach((b, i) => {
+      const d = document.createElement('div');
+      d.className = 'band';
+      d.dataset.page = pi;
+      d.dataset.band = i;
+      d.style.top = (b.y0 * s) + 'px';
+      d.style.left = (b.x0 * s) + 'px';
+      d.style.width = ((b.x1 - b.x0) * s) + 'px';
+      d.style.height = ((b.y1 - b.y0) * s) + 'px';
+      ov.appendChild(d);
+
+      const m0 = measureStartAt(pi, i) + 1;
+      const m1 = m0 + b.bars - 1;
+      const tag = document.createElement('div');
+      tag.className = 'measureTag';
+      tag.style.left = (b.x0 * s) + 'px';
+      tag.style.top = (b.y0 * s) + 'px';
+      tag.textContent = b.bars > 1 ? ('m' + m0 + '–' + m1) : ('m' + m0);
+      ov.appendChild(tag);
+    });
+  });
+}
+
+/** 滚动到指定页的页首 */
+function scrollToPage(pi) {
+  if (viewMode !== 'scroll') return;
+  stage.scrollTo({ top: Math.max(0, (pageTop[pi] || 0) - 8), behavior: 'smooth' });
+}
+
+/** 把播放头（小节框 / 扫描线 / 浮动小节号）挂到指定覆盖层里 */
+function attachPlayhead(target) {
+  if (!target) return;
+  target.appendChild(barBox);
+  target.appendChild(scanline);
+  target.appendChild($('measureLabel'));
+}
+
+/** 视图模式切换后的 DOM 处理：显隐、重建、恢复当前页 */
+function applyViewModeDom() {
+  const flip = viewMode === 'flip';
+  // 显式赋值：#scrollView 的 CSS 默认 display:none，置空会回落到 none
+  $('imgWrap').style.display = flip ? 'block' : 'none';
+  $('scrollView').style.display = flip ? 'none' : 'block';
+  if (flip) {
+    attachPlayhead(imgWrap);
+    if (pages.length) {
+      tabImg.src = pages[curPage].src;
+      drawBands();
+      if (!playing && bands.length) showPosition(0, 0);
+    }
+  } else {
+    buildScrollView();
+    if (pages.length) {
+      attachPlayhead(pageOv[curPage]);
+      drawBands();
+      if (!playing && bands.length) showPosition(0, 0);
+    }
+  }
+}
+
+/** 同步视图切换按钮的高亮 */
+function setViewModeUI() {
+  $('viewFlip').classList.toggle('on', viewMode === 'flip');
+  $('viewScroll').classList.toggle('on', viewMode === 'scroll');
+}
+
 /**
  * 重新计算图片显示尺寸：先按容器宽度自适应，再叠加用户缩放。
  * 缩放使用 CSS zoom，覆盖层作为 #imgWrap 子元素会自动跟随，无需重算坐标。
+ * 滚动模式下改由 buildScrollView() 负责排版。
  */
 function layout() {
+  // 滚动模式：重建长图后要重绘谱行，否则 innerHTML 清空后行框会消失
+  if (viewMode === 'scroll') {
+    buildScrollView();
+    if (pages.length) drawBands();
+    return;
+  }
   if (!tabImg.naturalWidth) return;
   const w = stage.clientWidth - 16;
   const scale = Math.min(1, w / tabImg.naturalWidth) * zoomLevel;
@@ -198,7 +386,7 @@ window.addEventListener('resize', layout);
 /* ------------------------------------------------------- 谱行识别（投影法） */
 
 $('btnDetect').onclick = () => {
-  if (!tabImg.naturalWidth) { setHint('请先加载谱图'); return; }
+  if (!pages[curPage] || !pages[curPage].img.naturalWidth) { setHint('请先加载谱图'); return; }
   pages[curPage].bands = detectBands();
   bands = pages[curPage].bands;
   renderBandList();
@@ -212,15 +400,18 @@ $('btnDetect').onclick = () => {
  * 把六线谱的 6 条线聚类成一个谱行系统 → 再逐行检测竖直小节线求小节数。
  */
 function detectBands() {
+  const img = pages[curPage].img;                        // 识别对象始终是「当前页」的图片
+  const NW = img.naturalWidth;
+  const NH = img.naturalHeight;
   const SW = 700;                                        // 降采样宽度（速度与精度折中）
-  const s = SW / tabImg.naturalWidth;                    // 采样比例
-  const sh = Math.round(tabImg.naturalHeight * s);
+  const s = SW / NW;                                     // 采样比例
+  const sh = Math.round(NH * s);
 
   const cv = document.createElement('canvas');
   cv.width = SW;
   cv.height = sh;
   const ctx = cv.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(tabImg, 0, 0, SW, sh);
+  ctx.drawImage(img, 0, 0, SW, sh);
   const d = ctx.getImageData(0, 0, SW, sh).data;
 
   // 逐行统计暗像素占比
@@ -269,8 +460,8 @@ function detectBands() {
   for (const [a, b, n] of clusters) {
     if (n < 3 || (b - a) > 90 / s) continue;
     const y0 = Math.max(0, Math.round(a / s - PAD_TOP));
-    const y1 = Math.min(tabImg.naturalHeight, Math.round(b / s + PAD_BOT));
-    const ext = xExtent(Math.round(a / s), Math.round(b / s));
+    const y1 = Math.min(NH, Math.round(b / s + PAD_BOT));
+    const ext = xExtent(Math.round(a / s), Math.round(b / s), img);
     out.push({
       y0, y1,
       x0: ext[0], x1: ext[1],
@@ -289,7 +480,7 @@ function detectBands() {
   }
 
   // ⑤ 逐行检测小节数
-  for (const b of fin) b.bars = detectBarCount(b);
+  for (const b of fin) b.bars = detectBarCount(b, img);
   return fin;
 }
 
@@ -298,7 +489,7 @@ function detectBands() {
  * 判据：列暗像素覆盖 ≥88% 谱线高度，且谱线下沿外延伸 ≤9px
  * （音符符杆会明显伸出谱线外，小节线不会；据此排除符杆误检）。
  */
-function detectBarCount(b) {
+function detectBarCount(b, img) {
   const top = b.sTop;
   const bot = b.sBot;
   const h = bot - top + 1;
@@ -306,10 +497,10 @@ function detectBarCount(b) {
 
   const cv = document.createElement('canvas');
   const m = 8;                                          // 上下留边，便于检测"延伸"
-  cv.width = tabImg.naturalWidth;
+  cv.width = img.naturalWidth;
   cv.height = h + m * 2;
   const ctx = cv.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(tabImg, 0, top - m, tabImg.naturalWidth, cv.height, 0, 0, cv.width, cv.height);
+  ctx.drawImage(img, 0, top - m, img.naturalWidth, cv.height, 0, 0, cv.width, cv.height);
   const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
 
   // 每列在谱线范围内的暗像素覆盖率
@@ -371,13 +562,13 @@ function detectBarCount(b) {
 }
 
 /** 求某行区域内暗像素的水平范围（即谱线左右边界） */
-function xExtent(y0, y1) {
-  const s = 700 / tabImg.naturalWidth;
+function xExtent(y0, y1, img) {
+  const s = 700 / img.naturalWidth;
   const cv = document.createElement('canvas');
   cv.width = 700;
   cv.height = Math.max(1, Math.round((y1 - y0) * s));
   const ctx = cv.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(tabImg, 0, y0, tabImg.naturalWidth, y1 - y0, 0, 0, 700, cv.height);
+  ctx.drawImage(img, 0, y0, img.naturalWidth, y1 - y0, 0, 0, 700, cv.height);
   const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
 
   let minX = cv.width;
@@ -394,7 +585,7 @@ function xExtent(y0, y1) {
   }
   // 兜底：整行全白（或全黑）时取 6%–94% 宽度
   if (minX >= maxX) {
-    return [Math.round(tabImg.naturalWidth * 0.06), Math.round(tabImg.naturalWidth * 0.94)];
+    return [Math.round(img.naturalWidth * 0.06), Math.round(img.naturalWidth * 0.94)];
   }
   return [Math.round(minX / s), Math.round(maxX / s)];
 }
@@ -402,6 +593,11 @@ function xExtent(y0, y1) {
 /* ---------------------------------------------------------------- 手动框行 */
 
 $('btnManual').onclick = () => {
+  // 滚动模式下点图是「跳到该行」，与逐行框选冲突，因此框行仅限翻页模式
+  if (viewMode === 'scroll') {
+    setHint('手动框行仅在「🔀 翻页」模式下可用（滚动模式下点谱行即可跳转）');
+    return;
+  }
   manualMode = !manualMode;
   manualPts = [];
   $('btnManual').classList.toggle('active', manualMode);
@@ -418,7 +614,7 @@ tabImg.addEventListener('click', (e) => {
     $('manualStep').textContent = String(manualPts.length + 1);
     if (manualPts.length === 2) {
       const [a, b] = manualPts.sort((p, q) => p - q);
-      const ext = xExtent(Math.round(a), Math.round(b));
+      const ext = xExtent(Math.round(a), Math.round(b), tabImg);
       bands.push({ y0: Math.round(a), y1: Math.round(b), x0: ext[0], x1: ext[1], bars: 4 });
       bands.sort((p, q) => p.y0 - q.y0);
       manualPts = [];
@@ -482,6 +678,7 @@ function renderBandList() {
 
 /** 在图上绘制谱行覆盖层（半透明框，便于核对识别结果） */
 function drawBands() {
+  if (viewMode === 'scroll') { drawBandsScroll(); return; }
   imgWrap.querySelectorAll('.band').forEach((n) => n.remove());
   imgWrap.querySelectorAll('.measureTag').forEach((n) => n.remove());
   for (let i = 0; i < bands.length; i++) {
@@ -749,6 +946,93 @@ function updateLoopUI() {
   $('btnLoop').classList.toggle('active', loopOn);
 }
 
+/* ---------------------------------------------------- 工程文件（导入/导出） */
+
+/**
+ * 生成工程对象：多页谱图 + 每页谱行识别结果 + 当前参数。
+ * 本地导入的图存的是 dataURL，因此工程文件自包含，换台机器打开也能用。
+ */
+function buildProject() {
+  return {
+    app: 'TabPilot',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: {
+      bpm: parseInt($('bpm').value, 10),
+      bpb: parseInt($('bpb').value, 10),
+      startMeasure: window.TPSettings.get('startMeasure') || 1,
+      rate: window.TPSettings.get('rate'),
+    },
+    pages: pages.map((p) => ({
+      src: p.src,
+      bands: p.bands.map((b) => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, bars: b.bars })),
+    })),
+  };
+}
+
+/** 导出并下载工程文件 */
+function exportProject() {
+  if (!pages.length) { setHint('还没有可导出的内容：先加载谱图'); return; }
+  const proj = buildProject();
+  const blob = new Blob([JSON.stringify(proj, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  a.href = url;
+  a.download = 'tabpilot-' + ts + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  setHint('已导出工程文件（含谱图 + 谱行识别结果），下次「打开工程」即可免重框');
+}
+
+/** 应用工程对象：恢复页、谱行与参数（供「打开工程」与测试复用） */
+function applyProject(proj) {
+  stop();
+  pages = [];
+  curPage = 0;
+  bands = [];
+  proj.pages.forEach((pg, idx) => loadProjectPage(pg.src, pg.bands || [], idx === 0));
+
+  const st = proj.settings || {};
+  if (st.bpm) $('bpm').value = st.bpm;
+  if (st.bpb) $('bpb').value = st.bpb;
+  if (st.startMeasure) window.TPSettings.set('startMeasure', st.startMeasure);
+  if (st.rate) window.TPSettings.set('rate', st.rate);
+  if (viewMode === 'scroll') buildScrollView();
+  setHint('工程已载入：' + proj.pages.length + ' 页，谱行识别结果已恢复，点「▶ 开始跟随」即可');
+}
+
+/** 读取工程文件并恢复 */
+function importProjectFile(file) {
+  const r = new FileReader();
+  r.onload = () => {
+    let proj = null;
+    try {
+      proj = JSON.parse(r.result);
+    } catch (e) {
+      setHint('打开工程失败：不是合法的 JSON');
+      return;
+    }
+    if (!proj || proj.app !== 'TabPilot' || !Array.isArray(proj.pages)) {
+      setHint('打开工程失败：不是 TabPilot 工程文件');
+      return;
+    }
+    applyProject(proj);
+  };
+  r.onerror = () => setHint('读取工程文件失败');
+  r.readAsText(file);
+}
+
+$('btnSaveProj').onclick = exportProject;
+$('btnOpenProj').onclick = () => $('projInput').click();
+$('projInput').onchange = (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (f) importProjectFile(f);
+  e.target.value = '';   // 允许重复选择同一个文件
+};
+
 // 「更多」菜单：收纳低频操作（示例谱/节拍器/放大镜/行列表），降低工具栏密度
 const morePop = $('morePop');
 $('btnMore').onclick = (e) => {
@@ -764,6 +1048,9 @@ $('btnClear').onclick = () => {
   stop();
   tabImg.removeAttribute('src');   // 清掉图上内容，回到空态引导
   barBox.style.display = 'none';
+  // 滚动模式下同时清掉长图内容，避免残留页
+  $('scrollView').innerHTML = '';
+  pageOv = []; pageTop = []; pageScale = [];
   renderBandList();
   renderPageNav();
   setLed('', '待机');
@@ -781,6 +1068,36 @@ $('rate').oninput = (e) => {
 $('startMeasure').onchange = (e) => {
   window.TPSettings.set('startMeasure', Math.max(1, parseInt(e.target.value, 10) || 1));
 };
+
+/* 视图模式切换：写入设置后由 applySettings 统一应用（单一入口，避免两处状态不同步） */
+$('viewFlip').onclick = () => window.TPSettings.set('viewMode', 'flip');
+$('viewScroll').onclick = () => window.TPSettings.set('viewMode', 'scroll');
+
+/**
+ * 滚动模式的点击：点谱行覆盖层或谱图 = 跳到该行开始。
+ * 与翻页模式不同，这里没有"整张 tabImg"，坐标要按被点击那一页换算。
+ */
+$('scrollView').addEventListener('click', (e) => {
+  if (viewMode !== 'scroll' || manualMode) return;
+
+  const bandEl = e.target.closest('.band');
+  if (bandEl) {
+    const pi = +bandEl.dataset.page;
+    if (pi !== curPage) switchPageDisplay(pi);
+    seekBand(+bandEl.dataset.band);
+    return;
+  }
+
+  const pageEl = e.target.closest('.scrollPage');
+  if (pageEl && e.target.tagName === 'IMG') {
+    const pi = +pageEl.dataset.page;
+    const r = e.target.getBoundingClientRect();
+    const y = ((e.clientY - r.top) / Math.max(1, r.height)) * (pages[pi].h || 1400);
+    if (pi !== curPage) switchPageDisplay(pi);
+    const bi = pages[pi].bands.findIndex((b) => y >= b.y0 && y <= b.y1);
+    if (bi >= 0) { bands = pages[pi].bands; seekBand(bi); }
+  }
+});
 
 /** BPM / 拍号变化会改变时间轴，重绘覆盖层即可 */
 $('bpm').onchange = drawBands;
@@ -834,9 +1151,60 @@ function tick() {
 function showPosition(bandIdx, barIdx, p = 0) {
   const b = bands[bandIdx];
   if (!b) return;
-  if (!tabImg.naturalWidth) return;   // 正在翻页、图片尚未就绪时跳过本帧绘制
   curBand = bandIdx;
   curBar = barIdx;
+
+  /* 滚动模式：整谱长图 + 连续自动滚动，不翻页。
+     覆盖层坐标需按本页显示缩放 s 换算（bands 存的是原始像素）。 */
+  if (viewMode === 'scroll') {
+    const ov = pageOv[curPage];
+    const s = pageScale[curPage] || 1;
+    if (!ov) return;
+    attachPlayhead(ov);
+
+    const ws = (b.x1 - b.x0) / b.bars;
+    const xs = b.x0 + barIdx * ws;
+
+    barBox.style.display = 'block';
+    barBox.style.left = (xs * s) + 'px';
+    barBox.style.top = (b.y0 * s) + 'px';
+    barBox.style.width = (ws * s) + 'px';
+    barBox.style.height = ((b.y1 - b.y0) * s) + 'px';
+
+    const mNum2 = measureStartAt(curPage, bandIdx) + barIdx + 1;
+    const ml2 = $('measureLabel');
+    ml2.style.display = 'block';
+    ml2.style.left = ((xs + ws / 2) * s) + 'px';
+    ml2.style.top = (b.y0 * s) + 'px';
+    ml2.textContent = '♪ 第 ' + mNum2 + ' 小节';
+
+    scanline.style.display = 'block';
+    scanline.style.top = ((b.y1 - 2) * s) + 'px';
+    scanline.style.left = (b.x0 * s) + 'px';
+    scanline.style.width = ((b.x1 - b.x0) * s) + 'px';
+
+    // 连续自动滚动：把当前行滚到视口上部
+    const targetY = pageTop[curPage] + b.y0 * s - stage.clientHeight * 0.3;
+    if (Math.abs(stage.scrollTop - targetY) > 8) {
+      stage.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+    }
+
+    $('bandNum').textContent = (bandIdx + 1) + ' / ' + bands.length;
+    $('pageNum').textContent = (curPage + 1) + ' / ' + pages.length;
+    $('barNum').textContent = mNum2;
+
+    document.querySelectorAll('#scrollView .band').forEach((it) => {
+      it.classList.toggle('cur', (+it.dataset.page === curPage && +it.dataset.band === bandIdx));
+    });
+    ov.querySelectorAll('.measureTag').forEach((tg, i) => tg.classList.toggle('cur', i === bandIdx));
+    const ft2 = document.querySelectorAll('#filmstrip .thumb');
+    ft2.forEach((it, i) => it.classList.toggle('cur', i === curPage));
+
+    if (magOn) drawMag(xs, b.y0, ws, b.y1 - b.y0);   // 放大镜取源图像素，与显示缩放无关
+    return;
+  }
+
+  if (!tabImg.naturalWidth) return;   // 正在翻页、图片尚未就绪时跳过本帧绘制
 
   // 小节框：行内按小节数均分
   const w = (b.x1 - b.x0) / b.bars;
@@ -887,17 +1255,18 @@ function showPosition(bandIdx, barIdx, p = 0) {
  * 图片没有矢量信息，直接按源区域缩放绘制（cover 适配，保持比例铺满）。
  */
 function drawMag(x, y, w, h) {
+  const img = pages[curPage] ? pages[curPage].img : null;
   const cv = $('magCanvas');
   const ctx = cv.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, cv.width, cv.height);
-  if (!tabImg.naturalWidth) return;
+  if (!img || !img.naturalWidth) return;
 
   const padY = h * 0.25;
   const sx = Math.max(0, x - w * 0.1);
   const sy = Math.max(0, y - padY);
-  const sw = Math.min(tabImg.naturalWidth - sx, w * 1.2);
+  const sw = Math.min(img.naturalWidth - sx, w * 1.2);
   const sh = h + padY * 2;
 
   const sAsp = sw / sh;
@@ -906,7 +1275,7 @@ function drawMag(x, y, w, h) {
   if (sAsp > cAsp) { dw = cv.width; dh = cv.width / sAsp; }
   else { dh = cv.height; dw = cv.height * sAsp; }
 
-  ctx.drawImage(tabImg, sx, sy, sw, sh, (cv.width - dw) / 2, (cv.height - dh) / 2, dw, dh);
+  ctx.drawImage(img, sx, sy, sw, sh, (cv.width - dw) / 2, (cv.height - dh) / 2, dw, dh);
 
   // 中心参考线：提示当前推进位置
   ctx.strokeStyle = 'rgba(225,29,72,.55)';
@@ -943,6 +1312,14 @@ function applySettings(s) {
   $('magnifier').classList.toggle('on', magOn);
 
   $('hint').style.display = s.showHints ? '' : 'none';
+
+  // 视图模式：只在真正变化时重建（默认翻页即为初始 DOM，首帧无需处理）
+  const vm = s.viewMode || 'flip';
+  if (vm !== viewMode) {
+    viewMode = vm;
+    setViewModeUI();
+    applyViewModeDom();
+  }
 }
 
 /* ---------------------------------------------------------------- 启动 */

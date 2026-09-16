@@ -11,6 +11,11 @@ Thumbs.db
 # 本地临时草稿
 *.tmp
 
+# 构建 / 验证临时输出
+.build.out
+.verify.out
+.gitstate*.txt
+
 # 本地验证临时文件（截图 / 探测页 / 浏览器 profile）
 _shot_*.png
 _verify_*.py

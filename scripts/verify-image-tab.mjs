@@ -372,6 +372,89 @@ window.addEventListener('load', function () {
               ok('修图：还原原图回到载入时的 src', pages[0].src === srcBefore, String(pages[0].src).slice(0, 24));
               closePrep();
 
+              // ===== 新增：缩放 / 专注模式 =====
+              setZoom(2.5);
+              ok('缩放：setZoom 生效', Math.abs(zoomLevel - 2.5) < 0.01, 'zoom=' + zoomLevel);
+              setZoom(9);
+              ok('缩放：上限夹紧到 4', zoomLevel === 4, 'zoom=' + zoomLevel);
+              setZoom(0.1);
+              ok('缩放：下限夹紧到 0.5', zoomLevel === 0.5, 'zoom=' + zoomLevel);
+              setZoom(1);
+
+              // jsdom 无布局，clientWidth 恒为 0 会落到下限 120，这里手动给个宽度
+              var svEl = document.getElementById('scrollView');
+              Object.defineProperty(svEl, 'clientWidth', { value: 400, configurable: true });
+              var w1 = scrollContentWidth();
+              setZoom(1.8);
+              var w2 = scrollContentWidth();
+              ok('滚动模式：内容宽度随缩放线性变化', Math.abs(w2 / w1 - 1.8) < 0.02,
+                'w1=' + Math.round(w1) + ' w2=' + Math.round(w2));
+              setZoom(1);
+              Object.defineProperty(svEl, 'clientWidth', { value: 0, configurable: true });
+
+              toggleFocus(true);
+              ok('专注模式：body.focus 生效', document.body.classList.contains('focus'));
+              toggleFocus(false);
+              ok('专注模式：可退出', !document.body.classList.contains('focus'));
+
+              // ===== 新增：伴奏音频 + 自动测速 =====
+              // BPM 检测是一组纯函数，这里直接合成脉冲串验证，无需真实解码。
+              var SR = 44100, SECS = 12, NN = SR * SECS;
+              function pulseTrain(bpm) {
+                var buf = new Float32Array(NN);
+                var pe = SR * (60 / bpm);
+                var width = Math.round(SR * 0.03);
+                var i;
+                for (var k = 0; k * pe < NN; k++) {
+                  var st = Math.round(k * pe);
+                  for (i = 0; i < width && st + i < NN; i++) buf[st + i] = 0.9;
+                }
+                return buf;
+              }
+              var ch120 = pulseTrain(120);
+              var b120 = detectBpmSamples(ch120, SR, 60);
+              ok('自动测速：120 BPM 脉冲串测得 120', Math.abs(b120 - 120) <= 2, 'got=' + b120);
+
+              var b90 = detectBpmSamples(pulseTrain(90), SR, 60);
+              ok('自动测速：90 BPM 脉冲串测得 90', Math.abs(b90 - 90) <= 2, 'got=' + b90);
+
+              ok('自动测速：静音返回 0（不瞎猜）',
+                detectBpmSamples(new Float32Array(SR * 5), SR, 60) === 0);
+
+              var envInf = onsetEnvelope(ch120, SR, 60);
+              ok('包络：帧数与时长×帧率一致',
+                Math.abs(envInf.env.length - Math.floor(SECS * envInf.fps)) <= 2,
+                'len=' + envInf.env.length + ' fps=' + envInf.fps.toFixed(1));
+              var nonNeg = true;
+              for (var ei = 0; ei < envInf.env.length; ei++) if (envInf.env[ei] < 0) nonNeg = false;
+              ok('包络：半波整流后取值非负', nonNeg);
+
+              var goodP = (60 * envInf.fps) / 120;
+              var scGood = scorePeriod(envInf.env, envInf.onsets, goodP);
+              var scBad = scorePeriod(envInf.env, envInf.onsets, goodP * 1.5);
+              ok('节拍打分：正确周期（精确率×召回率）优于错拍周期', scGood > scBad,
+                'good=' + scGood.toFixed(3) + ' bad=' + scBad.toFixed(3));
+              ok('包络：抽出的 onset 只占少数帧', envInf.onsets.length > 0 &&
+                envInf.onsets.length < envInf.env.length * 0.3,
+                'onsets=' + envInf.onsets.length + '/' + envInf.env.length);
+
+              var pk = computePeaks({ duration: SECS, sampleRate: SR, getChannelData: function () { return ch120; } }, 100);
+              ok('波形：峰值数组为列数×2', pk.length === 200, 'len=' + pk.length);
+              var hasAmp = false;
+              for (var pi2 = 0; pi2 < 100; pi2++) if (pk[pi2 * 2 + 1] > 0.5) hasAmp = true;
+              ok('波形：脉冲所在列取到正峰值', hasAmp);
+              ok('自动测速：AudioBuffer 入口可达同样结果',
+                Math.abs(detectBpmBuffer({ duration: SECS, sampleRate: SR, getChannelData: function () { return ch120; } }, 60) - 120) <= 2);
+
+              audioOffset = 250;
+              ok('工程导出：音画偏移随 settings 保存', buildProject().settings.audioOffset === 250);
+              audioOffset = 0;
+              // 只带 settings、不带页的工程也能还原偏移
+              applyProject({ app: 'TabPilot', version: 1, pages: [], settings: { audioOffset: 375 } });
+              ok('工程还原：音画偏移被读回', audioOffset === 375 &&
+                document.getElementById('audioOffset').value === '375', 'off=' + audioOffset);
+              audioOffset = 0;
+
               document.getElementById('btnClear').click();
               ok('清空后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');
               ok('清空后滚动视图无残留页', document.querySelectorAll('#scrollView .scrollPage').length === 0);

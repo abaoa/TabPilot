@@ -316,3 +316,85 @@
     transform: none;
   }
 }
+
+/* ---------------- 触摸设备适配（手机 / 平板） ----------------
+ * 粗指针（手指）下把点击目标放大到接近 44px 的可用尺寸，
+ * 并让 heights 不被引擎的自动最小字号影响。
+ * 注意：这里只放宽尺寸，不改变桌面端已验证的布局规则。 */
+@media (pointer: coarse) {
+  .btn {
+    padding: 10px 14px;
+    font-size: 13.5px;
+    min-height: 38px;
+  }
+
+  .btn.sm {
+    padding: 8px 11px;
+    min-height: 34px;
+  }
+
+  .tabs a,
+  .tabs span {
+    padding: 8px 15px;
+    font-size: 13.5px;
+  }
+
+  .app-header input[type='number'],
+  .app-header input[type='text'] {
+    min-height: 34px;
+  }
+
+  /* 触屏上没有 hover，按下态替代 hover 反馈 */
+  .tabs a:active {
+    color: var(--brand);
+    background: var(--brand-soft);
+  }
+
+  /* 手机底部的小黑条（Home Indicator）会盖住状态栏，补安全区内边距 */
+  .app-footer {
+    padding-bottom: calc(9px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* ---------------- 沉浸模式（专注看谱） ----------------
+ * 移动端屏幕矮，顶栏 + 工具条会吃掉近三分之一的高度。
+ * body.focus 下隐藏 header 与侧栏，只留舞台与状态栏；
+ * 再点浮动按钮或 Esc 退出。 */
+body.focus .app-header {
+  display: none;
+}
+
+body.focus .app-aside {
+  display: none;
+}
+
+body.focus .app-footer {
+  padding-top: 6px;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+}
+
+body.focus .app-main {
+  padding: 6px;
+}
+
+/* 沉浸模式的浮动出口，常态隐藏 */
+.focus-exit {
+  display: none;
+  position: fixed;
+  right: calc(12px + env(safe-area-inset-right, 0px));
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  z-index: 60;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: var(--r-pill);
+  background: var(--card);
+  box-shadow: var(--sh-3);
+  opacity: .82;
+}
+
+body.focus .focus-exit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

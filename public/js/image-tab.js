@@ -325,7 +325,9 @@ function switchPageDisplay(pi) {
 function scrollContentWidth() {
   const sv = $('scrollView');
   const w = sv.clientWidth || (stage.clientWidth - 16) || 800;
-  return Math.max(120, w);
+  // 乘 zoomLevel：滚动模式下双击/双指缩放靠重建长图的宽度实现，
+  // pageScale 会随之重算，所以不能用 CSS zoom（那会让覆盖层错位）。
+  return Math.max(120, w * zoomLevel);
 }
 
 /**
@@ -1132,10 +1134,7 @@ function play() {
 /** 从指定音乐时间(ms)开始播放（跨页时间轴） */
 function startAtTime(t0ms) {
   stop(false);
-  if (metro) {
-    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
-    if (ac.state === 'suspended') ac.resume();
-  }
+  if (metro) ensureAC();
   elapsedBase = t0ms;
   t0 = performance.now();
   lastBeat = -1;
@@ -1146,6 +1145,7 @@ function startAtTime(t0ms) {
   setLed('ok', '图片谱跟随中');
   setHint('跟随中：红色框 = 当前小节，右下放大镜实时放大。跨页时自动翻页，点击任意行可跳转。');
   $('btnPlay').textContent = '▶ 跟随中…';
+  startAudioAt(elapsedBase);   // 伴奏跟着视觉时间走（有伴奏且未静音时才发声）
 }
 
 /** 暂停（保留当前位置） */
@@ -1153,6 +1153,7 @@ function pause() {
   if (!playing || paused) return;
   elapsedBase = musicNow();
   paused = true;
+  stopAudio();   // 暂停时伴奏一起停（续播会从当前位置重新起播）
   // 暂停也算练习时间，先结算本段（续播时重新起算）
   if (sessStart) { sessMs += Date.now() - sessStart; sessStart = 0; }
   setLed('warn', '已暂停');
@@ -1164,6 +1165,7 @@ function resume() {
   t0 = performance.now();
   sessStart = Date.now();
   setLed('ok', '图片谱跟随中');
+  startAudioAt(elapsedBase);
 }
 
 /** 跳转到当前页的指定行；播放中则改从该行时间开始 */
@@ -1198,6 +1200,7 @@ function stop(reset = true) {
   if (reset) finishPractice();
   if (timer) clearInterval(timer);
   timer = null;
+  stopAudio();   // 停止跟随的同时停掉伴奏
   playing = false;
   paused = false;
   curBand = curBar = -1;
@@ -1320,6 +1323,8 @@ function buildProject() {
       bpb: parseInt($('bpb').value, 10),
       startMeasure: window.TPSettings.get('startMeasure') || 1,
       rate: window.TPSettings.get('rate'),
+      // 音画偏移（ms）。音频本身体积太大，不进工程文件，只存这个对齐量
+      audioOffset: audioOffset || 0,
     },
     marks: marks.map((m) => ({ page: m.page, band: m.band, name: m.name, color: m.color })),
     pages: pages.map((p) => ({
@@ -1363,6 +1368,10 @@ function applyProject(proj) {
   if (st.bpb) $('bpb').value = st.bpb;
   if (st.startMeasure) window.TPSettings.set('startMeasure', st.startMeasure);
   if (st.rate) window.TPSettings.set('rate', st.rate);
+  if (st.audioOffset) {
+    audioOffset = parseInt(st.audioOffset, 10) || 0;
+    $('audioOffset').value = audioOffset;
+  }
   if (viewMode === 'scroll') buildScrollView();
   setHint('工程已载入：' + proj.pages.length + ' 页，谱行识别结果已恢复，点「▶ 开始跟随」即可');
 }
@@ -1596,6 +1605,552 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if ($('practiceModal').style.display === 'flex') closePractice();
   else if ($('prepModal').style.display === 'flex') closePrep();
+  else toggleFocus(false);
+});
+
+/* ============================================================ 伴奏音频 + 自动测速 */
+
+let audioBuf = null;      // 解码后的音频（仅内存态，体积太大不进工程文件）
+let audioPeaks = null;    // 波形峰值，每列一对 [min, max]
+let audioName = '';       // 文件名，只用于显示
+let audioSrc = null;      // 当前发声的 AudioBufferSourceNode
+let audioPlaying = false;
+let audioMuted = false;   // 用户主动关掉伴奏发声
+let bpmGuess = 0;         // 自动测速结果
+let audioOffset = 0;      // 音画偏移（ms）：正数 = 音频比视觉延后
+
+/** 复用节拍器那个 AudioContext；没有实现时返回 null（测试环境） */
+function ensureAC() {
+  if (!ac) {
+    const C = window.AudioContext || window.webkitAudioContext;
+    if (!C) return null;
+    try { ac = new C(); } catch (e) { return null; }
+  }
+  if (ac.state === 'suspended' && ac.resume) { try { ac.resume(); } catch (e) {} }
+  return ac;
+}
+
+/** 视觉时间(ms) → 音频位置(秒)。偏移用来补偿换气和起拍差异 */
+function audioSecOf(tMs) {
+  return Math.max(0, (tMs + audioOffset) / 1000);
+}
+
+/* ---- BPM 检测的核心：能量包络 → onset → 自相关 → 节拍相位打分 ---- */
+
+/**
+ * 计算短时能量的 onset 强度序列。
+ * 流程：RMS → 对数压缩（贴近听觉）→ 一阶差分半波整流 → 减去局部均值。
+ * 最后一步是关键：它把"整体变响了"的缓慢起伏滤掉，只留下突变。
+ * @returns {{env:Float32Array, fps:number}}
+ */
+function onsetEnvelope(ch, sr, maxSec) {
+  const FPS = 86;                                   // 包络帧率 ≈ 11.6ms 一帧
+  const hop = Math.max(1, Math.round(sr / FPS));
+  const end = Math.min(ch.length, Math.round(maxSec * sr));
+  const n = Math.max(0, Math.floor((end - hop) / hop));
+  const env = new Float32Array(n);
+  let prev = 0;
+  for (let f = 0; f < n; f++) {
+    let s = 0;
+    const i0 = f * hop;
+    for (let j = 0; j < hop; j++) { const v = ch[i0 + j]; s += v * v; }
+    let rms = Math.sqrt(s / hop);
+    const db = Math.log10(rms + 1e-8);
+    let d = db - prev;
+    env[f] = d > 0 ? d : 0;                         // 半波整流
+    prev = db;
+  }
+  // 归一化 + 局部自适应去噪（减去滑动窗均值）
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += env[i];
+  mean = n ? mean / n : 0;
+  let sd = 0;
+  for (let i = 0; i < n; i++) { const d = env[i] - mean; sd += d * d; }
+  sd = Math.sqrt(n ? sd / n : 0) || 1;
+  // ⚠️ 必须先在副本上归一化：如果就地改写 env，滑窗均值会读到已被改写的前序值，
+  // 结果就是素材前后半段被两套不同的"噪声基准"处理，包络不再稀疏，
+  // 后续的周期打分会被虚假的中等值抬高，实测会把 72 BPM 误判成 143。
+  const norm = new Float32Array(n);
+  for (let i = 0; i < n; i++) norm[i] = (env[i] - mean) / sd;
+  const win = 20;
+  let hits = 0;
+  for (let i = 0; i < n; i++) {
+    let m = 0, c = 0;
+    for (let k = Math.max(0, i - win); k < Math.min(n, i + win); k++) { m += norm[k]; c++; }
+    const v = norm[i] - (c ? m / c : 0);
+    // 阈值很关键：只保留明显高于局部噪声基底的帧。
+    // 若把"超过局部均值"的都算 onset，白噪声会贡献大量零散的伪击点，
+    // 而格点越密的候选(BPM 越高)越容易碰上它们 —— 打分会系统性偏爱倍频，
+    // 实测不设阈值时 72 BPM 会被判成 144。norm 已按标准差归一，0.9 即 0.9σ。
+    if (v > 0.9) { env[i] = v; hits++; } else { env[i] = 0; }
+  }
+  // 非极大抑制：一次击打通常横跨 3~4 帧，整段都记成 onset 会让"命中"过于廉价。
+  // 每个连通段只保留最高那一帧。
+  for (let i = 0; i < n; i++) {
+    if (env[i] <= 0) continue;
+    const lo = Math.max(0, i - 2);
+    const hi = Math.min(n - 1, i + 2);
+    let isMax = true;
+    for (let k = lo; k <= hi; k++) {
+      if (k === i) continue;
+      if (env[k] > env[i] || (env[k] === env[i] && k < i)) { isMax = false; break; }
+    }
+    if (!isMax) env[i] = 0;
+  }
+  // 记下所有 onset 的位置：打分时要判断"有多少击点被节拍解释掉了"，
+  // 预先抽出来可以省掉每次打分扫描整条包络。
+  const onsets = [];
+  for (let i = 0; i < n; i++) if (env[i] > 0) onsets.push(i);
+  return { env, fps: sr / hop, onsets };
+}
+
+/**
+ * 给定节拍周期（单位：帧），穷举起始相位，取最好相位下的 F 值。
+ *
+ * 判据是「精确率 × 召回率」的调和平均，而不是单纯的均值：
+ *   · 精确率 precision —— 格点里有多少落在真正的击点上。
+ *     半速（70 BPM）的格点也全都踩在拍上，所以单独比均值时它常常占优；
+ *   · 召回率 recall —— 所有击点里有多少被这套格点解释掉了。
+ *     这是关键：140 BPM 能解释每一拍，70 BPM 只能解释隔一拍的那些，
+ *     漏掉的弱拍会把它拉下来。
+ * 只比"落在拍上的能量均值"会被重拍结构误导 —— 实测 140 会被判成 70。
+ *
+ * @param {Float32Array} env 归一化后的 onset 包络
+ * @param {number[]} onsets env 中非零帧的下标（预先抽出以省扫描）
+ * @param {number} period 候选周期（帧，可为小数）
+ * @param {number} spanFrames 参与打分的素材长度（帧）
+ */
+function scorePeriod(env, onsets, period, spanFrames) {
+  if (!(period > 1)) return 0;
+  const phases = Math.max(24, Math.min(120, Math.ceil(period / 1.2)));
+  const tol = 2.5;        // 帧（≈29ms）：一个打击脉冲的有效半宽，落在这个范围内就算踩中
+  // 相位搜索必须比容差细，否则正确的慢周期反而找不到对齐相位：
+  // 固定 24 档对 71.6 帧的周期就有 3 帧步长，比 tol 还宽，会把 72 BPM 判成 143。
+  // 另外要按「固定时长」而不是「固定点数」来取样本。
+  // 否则快周期天然覆盖更多点，点数不公平，均值也就不具可比性。
+  const span = Math.min(env.length, spanFrames || env.length);
+  let best = 0;
+  for (let p = 0; p < phases; p++) {
+    const off = (period * p) / phases;
+    const total = Math.min(span, off + period * 200);
+    if (total < period * 4) continue;                // 素材里至少要有 4 拍
+
+    // 精确率：格点附近窗口内能找到 onset 就算踩中
+    let gridHit = 0, gridAll = 0;
+    for (let x = off; x < total; x += period) {
+      const i = Math.round(x);
+      if (i >= env.length) break;
+      gridAll++;
+      let seen = false;
+      for (let d = -tol; d <= tol && !seen; d++) {
+        const j = i + Math.round(d);
+        if (j >= 0 && j < env.length && env[j] > 0) seen = true;
+      }
+      if (seen) gridHit++;
+    }
+    if (gridAll < 4) continue;
+
+    // 召回率：每个击点到最近格点的距离是否在容差内
+    let hitOn = 0, allOn = 0;
+    for (let q = 0; q < onsets.length; q++) {
+      const i = onsets[q];
+      if (i >= total) break;
+      allOn++;
+      const rel = ((i - off) % period + period) % period;
+      if (Math.min(rel, period - rel) <= tol) hitOn++;
+    }
+    if (!allOn) continue;
+
+    const P = gridHit / gridAll;
+    const R = hitOn / allOn;
+    const f = P + R > 0 ? (2 * P * R) / (P + R) : 0;
+    if (f > best) best = f;
+  }
+  return best;
+}
+
+/**
+ * 在候选 lag 的 ±1 帧邻域内精细搜索真实周期。
+ *
+ * 为什么必须有这一步：自相关只能给出整数帧的 lag，而真实拍间隔几乎不可能
+ * 正好是整数帧（比如 128 BPM 在 86fps 下是 40.29 帧）。这点误差单独看微不足道，
+ * 但 scorePeriod 要累加几十个周期，累积起来能到好几个帧 —— 比一个打击脉冲还宽，
+ * 于是格点全部落空，真实 BPM 的得分反而低于"错半拍"的候选。
+ * 实测不加这一步，128 BPM 会被判成 64。
+ * @returns {{period:number, score:number}}
+ */
+function refinePeriod(env, onsets, lag, spanFrames) {
+  let bestP = lag;
+  let bestS = scorePeriod(env, onsets, lag, spanFrames);
+  let step = 0.25;
+  for (let pass = 0; pass < 4; pass++) {
+    const lo = bestP - step * 2;
+    const hi = bestP + step * 2;
+    for (let p = lo; p <= hi; p += step) {
+      if (p <= 1) continue;
+      const s = scorePeriod(env, onsets, p, spanFrames);
+      if (s > bestS) { bestS = s; bestP = p; }
+    }
+    step /= 4;                     // 逐轮收窄，最终精度约 0.004 帧
+  }
+  return { period: bestP, score: bestS };
+}
+
+/**
+ * 自相关取候选周期：在 50–220 BPM 对应的 lag 范围内找局部峰值，按峰高排前 N。
+ * @returns {number[]} 候选 lag（帧）
+ */
+function autocorrLags(env, fps) {
+  const minLag = Math.max(2, Math.round((fps * 60) / 220));
+  const maxLag = Math.min(env.length - 1, Math.round((fps * 60) / 50));
+  if (maxLag <= minLag + 1) return [];
+  const ac = new Float32Array(maxLag + 1);
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let s = 0;
+    const cnt = env.length - lag;
+    for (let i = 0; i < cnt; i++) s += env[i] * env[i + lag];
+    ac[lag] = s / Math.max(1, cnt);
+  }
+  let mx = 0;
+  for (let lag = minLag; lag <= maxLag; lag++) if (ac[lag] > mx) mx = ac[lag];
+  if (mx <= 0) return [];
+  const peaks = [];
+  for (let lag = minLag + 1; lag < maxLag; lag++) {
+    if (ac[lag] >= ac[lag - 1] && ac[lag] >= ac[lag + 1] && ac[lag] > mx * 0.25) {
+      peaks.push({ lag, v: ac[lag] / mx });
+    }
+  }
+  peaks.sort((a, b) => b.v - a.v);
+  return peaks.slice(0, 6).map((p) => p.lag);
+}
+
+/**
+ * 从单声道采样数据推算 BPM。
+ * 候选 lag 换算成 BPM 后，连同它的 2 倍 / 一半一起用 scorePeriod 打分，
+ * 再乘一个以 120 BPM 为中心的高斯先验 —— 这一步用来打破"60 与 120 同分"
+ * 的平局（等间隔脉冲在两种划分下都能对齐）。
+ * @param {Float32Array} ch 单声道采样
+ * @param {number} sr 采样率
+ * @param {number} maxSec 最多分析多少秒（长曲的前奏/主歌通常已足够）
+ * @returns {number} 推算出的 BPM；找不到稳定节拍返回 0
+ */
+function detectBpmSamples(ch, sr, maxSec) {
+  const { env, fps, onsets } = onsetEnvelope(ch, sr, maxSec || 60);
+  if (env.length < fps * 4) return 0;              // 太短，没法判断周期
+  const lags = autocorrLags(env, fps);
+  if (!lags.length) return 0;
+
+  // 各候选统一在同样 14 秒的素材上打分，慢/快周期才有可比性
+  const span = Math.round(Math.min(env.length, fps * 14));
+
+  // 每个候选 lag 连同它的两倍与半速一起作为起点，各自做周期精搜。
+  // 周期信号在整数倍 lag 上自相关都很强，单看一个 lag 会漏掉正确的划分。
+  const seeds = [];
+  for (const lag of lags) seeds.push(lag, lag * 2, lag / 2);
+
+  let best = 0, bestScore = 0;
+  for (const seed of seeds) {
+    if (!(seed > 1)) continue;
+    const r = refinePeriod(env, onsets, seed, span);
+    const bpm = (60 * fps) / r.period;
+    if (!(bpm > 20 && bpm < 300)) continue;
+    const prior = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 120) / 1.4, 2));
+    const sc = r.score * prior;
+    if (sc > bestScore) { bestScore = sc; best = bpm; }
+  }
+  if (!best) return 0;
+
+  // 常见贝斯/鼓机把"半速""倍速"算成同一拍的情况很常见，
+  // 最后统一折叠到大多数人认的速度区间再给出建议值。
+  let out = best;
+  while (out > 180) out /= 2;
+  while (out < 70) out *= 2;
+  return Math.round(out);
+}
+
+/** 从 AudioBuffer 推算 BPM（多声道下混、截取前若干秒） */
+function detectBpmBuffer(buf, maxSec) {
+  const ch = buf.getChannelData(0);
+  return detectBpmSamples(ch, buf.sampleRate, maxSec);
+}
+
+/* ---- 波形 ---- */
+
+/** 提取每列的 min/max 峰值。cols 取画布像素密度即可，多了只是浪费 */
+function computePeaks(buf, cols) {
+  const ch = buf.getChannelData(0);
+  const n = ch.length;
+  const per = Math.max(1, Math.floor(n / cols));
+  const out = new Float32Array(cols * 2);
+  for (let c = 0; c < cols; c++) {
+    const s = c * per;
+    const e = c === cols - 1 ? n : Math.min(n, s + per);
+    let mn = 0, mx = 0;
+    for (let i = s; i < e; i++) {
+      const v = ch[i];
+      if (v < mn) mn = v; else if (v > mx) mx = v;
+    }
+    out[c * 2] = mn;
+    out[c * 2 + 1] = mx;
+  }
+  return out;
+}
+
+/** 画波形 + 已检测出的节拍格线 */
+function drawWave() {
+  const cv = $('waveCanvas');
+  const box = $('waveBox');
+  const ctx = cv.getContext && cv.getContext('2d');
+  if (!ctx) return;
+  const w = Math.max(120, (box && box.clientWidth) || 600);
+  const h = Math.max(30, (box && box.clientHeight) || 56);
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(w * dpr);
+  cv.height = Math.round(h * dpr);
+  if (ctx.setTransform) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!audioPeaks) return;
+
+  const mid = h / 2;
+  // 节拍格线：只画重拍（每小节第一拍），方便肉眼核对测速准不准
+  if (bpmGuess > 0 && audioBuf) {
+    const barSec = (60 / bpmGuess) * Math.max(1, parseInt($('bpb').value, 10) || 4);
+    const xPer = w / audioBuf.duration;
+    ctx.strokeStyle = 'rgba(47,111,237,.28)';
+    ctx.lineWidth = 1;
+    for (let t = 0; t <= audioBuf.duration; t += barSec) {
+      const x = Math.round(t * xPer) + 0.5;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+  }
+
+  const cols = audioPeaks.length / 2;
+  const bw = w / cols;
+  ctx.fillStyle = '#2f6fed';
+  for (let i = 0; i < cols; i++) {
+    const mn = audioPeaks[i * 2], mx = audioPeaks[i * 2 + 1];
+    const top = mid - mx * (mid - 1);
+    const bot = mid - mn * (mid - 1);
+    ctx.fillRect(i * bw, top, Math.max(1, bw), Math.max(1, bot - top));
+  }
+  // 中轴线
+  ctx.strokeStyle = 'rgba(0,0,0,.18)';
+  ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
+}
+
+/* ---- 播放联动 ---- */
+
+/** 从指定的视觉时间开始播伴奏；超出音频长度或静音时什么都不做 */
+function startAudioAt(tMs) {
+  if (!audioBuf || audioMuted) return;
+  const ctx2 = ensureAC();
+  if (!ctx2) return;
+  const off = audioSecOf(tMs);
+  if (off >= audioBuf.duration) { stopAudio(); updateAudioHead(tMs); return; }
+  stopAudio();
+  try {
+    const src = ctx2.createBufferSource();
+    src.buffer = audioBuf;
+    if (src.playbackRate) src.playbackRate.value = rate;
+    const g = ctx2.createGain();
+    g.gain.value = 0.85;
+    src.connect(g);
+    g.connect(ctx2.destination);
+    src.start(0, off);
+    audioSrc = src;
+    audioPlaying = true;
+    updateAudioHead(tMs);
+  } catch (e) {
+    audioSrc = null;
+    audioPlaying = false;
+  }
+  syncAudioBtn();
+}
+
+function stopAudio() {
+  if (audioSrc) {
+    try { audioSrc.stop(); } catch (e) {}
+    try { audioSrc.disconnect(); } catch (e) {}
+    audioSrc = null;
+  }
+  audioPlaying = false;
+  syncAudioBtn();
+}
+
+/** 播放头游标跟着视觉时间走（用百分比定位，不必重画波形） */
+function updateAudioHead(tMs) {
+  const head = $('waveHead');
+  if (!head) return;
+  if (!audioBuf) { head.style.display = 'none'; return; }
+  head.style.display = 'block';
+  const pct = Math.min(100, (audioSecOf(tMs) / audioBuf.duration) * 100);
+  head.style.left = pct + '%';
+}
+
+function syncAudioBtn() {
+  const b = $('btnAudioPlay');
+  if (!b) return;
+  b.textContent = audioPlaying && !audioMuted ? '⏸' : '▶';
+}
+
+/** 倍速变了就让正在响的音源跟着变速（不重启，避免断音） */
+function syncAudioRate() {
+  if (audioSrc && audioSrc.playbackRate) {
+    try { audioSrc.playbackRate.value = rate; } catch (e) {}
+  }
+}
+
+/* ---- 文件导入 ---- */
+
+function loadAudioFile(file) {
+  const ctx2 = ensureAC();
+  if (!ctx2) { setHint('当前环境不支持音频解码（Web Audio 不可用）'); return; }
+  setHint('正在解码音频…');
+  const r = new FileReader();
+  r.onload = () => {
+    let done = false;
+    const ok = (buf) => {
+      if (done) return;
+      done = true;
+      audioBuf = buf;
+      audioName = file.name;
+      bpmGuess = 0;
+      audioOffset = 0;                    // 换曲了，旧的偏移没有意义
+      $('audioOffset').value = 0;
+      audioMuted = false;
+      audioPeaks = computePeaks(buf, 900);
+      $('audioName').textContent = file.name;
+      $('audioBpm').textContent = '';
+      $('audioBar').classList.remove('collapsed');
+      ['btnAudioPlay', 'btnBpmDetect', 'btnAudioClose', 'offsetWrap', 'audioTip']
+        .forEach((id) => { $(id).style.display = ''; });
+      $('btnBpmUse').style.display = 'none';
+      drawWave();
+      updateAudioHead(0);
+      setLed('ok', '伴奏已加载：' + file.name);
+      setHint('点「🎯 自动测速」推算这首曲子的 BPM，或直接开始跟随（点波形可试听）');
+    };
+    const bad = () => { if (!done) { done = true; setHint('音频解码失败：格式可能不受支持'); } };
+    // 非 Promise 的老实现也要兼容（Safari 早期）
+    try {
+      const p = ctx2.decodeAudioData(r.result, ok, bad);
+      if (p && p.then) p.then(ok, bad);
+    } catch (e) { bad(); }
+  };
+  r.onerror = () => setHint('读取音频文件失败：' + file.name);
+  r.readAsArrayBuffer(file);
+}
+
+function clearAudio() {
+  stopAudio();
+  audioBuf = null;
+  audioPeaks = null;
+  bpmGuess = 0;
+  audioOffset = 0;
+  $('audioOffset').value = 0;
+  $('audioName').textContent = '未加载';
+  $('audioBpm').textContent = '';
+  $('audioBar').classList.add('collapsed');
+  ['btnAudioPlay', 'btnBpmDetect', 'btnBpmUse', 'btnAudioClose', 'offsetWrap', 'audioTip']
+    .forEach((id) => { $(id).style.display = 'none'; });
+  $('waveHead').style.display = 'none';
+  const cv = $('waveCanvas');
+  const c = cv.getContext && cv.getContext('2d');
+  if (c) c.clearRect(0, 0, cv.width, cv.height);
+  setHint('已移除伴奏');
+}
+
+/* ---- 控件绑定 ---- */
+
+$('btnAudioLoad').onclick = () => $('audioInput').click();
+$('audioInput').onchange = (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (f) loadAudioFile(f);
+  e.target.value = '';
+};
+$('btnAudioClose').onclick = clearAudio;
+
+/** 波形点击/拖动：从该秒起试听（跟随正在播时则一并跳转） */
+(function bindWaveSeek() {
+  const box = $('waveBox');
+  if (!box) return;
+  let dragging = false;
+  const posToSec = (ev) => {
+    const r = box.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, ev.clientX - r.left));
+    if (!audioBuf) return 0;
+    return (x / Math.max(1, r.width)) * audioBuf.duration;
+  };
+  box.addEventListener('pointerdown', (e) => {
+    if (!audioBuf) return;
+    dragging = true;
+    const sec = posToSec(e);
+    audioMuted = false;
+    if (playing || paused) {
+      const t = Math.max(0, sec * 1000 - audioOffset);
+      elapsedBase = t;
+      startAtTime(t);
+    } else {
+      startAudioAt(sec * 1000 - audioOffset);
+    }
+    updateAudioHead(sec * 1000 - audioOffset);
+  });
+  box.addEventListener('pointermove', (e) => { if (dragging) updateAudioHead(posToSec(e) * 1000 - audioOffset); });
+  const end = () => { dragging = false; };
+  box.addEventListener('pointerup', end);
+  box.addEventListener('pointercancel', end);
+  box.addEventListener('pointerleave', end);
+})();
+
+$('btnAudioPlay').onclick = () => {
+  if (!audioBuf) return;
+  audioMuted = !audioMuted;
+  if (audioMuted) { stopAudio(); setHint('伴奏已静音（只留节拍器）'); }
+  else {
+    startAudioAt((playing || paused) ? curTime() : elapsedBase);
+    setHint('伴奏已开启');
+  }
+};
+
+$('btnBpmDetect').onclick = () => {
+  if (!audioBuf) return;
+  $('btnBpmDetect').disabled = true;
+  $('audioBpm').textContent = '分析中…';
+  // 让浏览器先把「分析中」画出来，再做几十毫秒的密集计算
+  setTimeout(() => {
+    const bpm = detectBpmBuffer(audioBuf, 60);
+    bpmGuess = bpm;
+    $('btnBpmDetect').disabled = false;
+    if (bpm) {
+      $('audioBpm').innerHTML = '≈ <b>' + bpm + '</b> BPM';
+      $('btnBpmUse').style.display = '';
+      setHint('检测到约 ' + bpm + ' BPM。点「采用」把它写进上面速度并按此重排时间轴');
+    } else {
+      $('audioBpm').textContent = '未找到稳定节拍';
+      $('btnBpmUse').style.display = 'none';
+      setHint('这段音频没有明显的节拍脉冲，请手动设 BPM');
+    }
+    drawWave();
+  }, 30);
+};
+
+$('btnBpmUse').onclick = () => {
+  if (!bpmGuess) return;
+  $('bpm').value = bpmGuess;
+  drawBands();
+  drawWave();   // 波形上的小节格线按新 BPM 重画
+  setLed('ok', 'BPM 已设为 ' + bpmGuess + '（时间轴已按此重算）');
+  setHint('BPM 已更新。若伴奏与起始对不上，用「偏移」做毫秒级微调');
+};
+
+$('audioOffset').onchange = (e) => {
+  audioOffset = parseInt(e.target.value, 10) || 0;
+  updateAudioHead(curTime());
+  if (audioBuf && audioPlaying) startAudioAt(curTime());
+};
+
+window.addEventListener('resize', () => {
+  if (audioPeaks) drawWave();
 });
 
 /* ---------------------------------------------------- 透视矫正（四点拉正） */
@@ -2210,10 +2765,107 @@ $('btnMag').onclick = () => {
 
 /** 双击图片：在适应宽度与放大之间切换 */
 tabImg.addEventListener('dblclick', () => {
-  zoomLevel = zoomLevel === 1.0 ? 1.6 : 1.0;
+  setZoom(zoomLevel === 1.0 ? 1.6 : 1.0);
+});
+
+/* ------------------------------------------------------------ 触控手势 */
+
+/**
+ * 统一改缩放比例的入口：夹取值 → 更新 → 重排版。
+ * 抽出来是为了让双击和双指手势都只走一条路。
+ */
+function setZoom(z) {
+  z = Math.max(0.5, Math.min(4, z));
+  if (Math.abs(z - zoomLevel) < 0.005) return;
+  zoomLevel = z;
   layout();
   drawBands();
-});
+}
+
+function touchDist(ts) {
+  const dx = ts[0].clientX - ts[1].clientX;
+  const dy = ts[0].clientY - ts[1].clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/**
+ * 触控适配两件事：双指缩放 + 左右快划翻页。
+ *
+ * stage 上刻意用 'pan-x pan-y' 而不是 'none'：
+ *   none 会把浏览器原生的平滑滚动一并废掉，单指拖动就不好用了；
+ *   pan-x pan-y 保留平移，同时把 pinch 交给我们自己处理。
+ */
+stage.style.touchAction = 'pan-x pan-y';
+
+let pinch = { active: false, dist: 0, zoom: 1 };
+let swipe = { active: false, x: 0, y: 0, t: 0 };
+
+stage.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2) {
+    pinch.active = true;
+    pinch.dist = touchDist(e.touches);
+    pinch.zoom = zoomLevel;
+    swipe.active = false;
+  } else if (e.touches.length === 1) {
+    swipe.active = true;
+    swipe.x = e.touches[0].clientX;
+    swipe.y = e.touches[0].clientY;
+    swipe.t = Date.now();
+  }
+}, { passive: true });
+
+stage.addEventListener('touchmove', (e) => {
+  if (!pinch.active || e.touches.length !== 2) return;
+  e.preventDefault();                       // 阻止页面级缩放，交由我们自己算
+  const d = touchDist(e.touches);
+  if (pinch.dist > 8 && d > 8) setZoom(pinch.zoom * (d / pinch.dist));
+}, { passive: false });
+
+stage.addEventListener('touchend', (e) => {
+  if (pinch.active && e.touches.length < 2) pinch.active = false;
+  if (swipe.active && !e.touches.length) {
+    swipe.active = false;
+    endSwipe(e.changedTouches && e.changedTouches[0]);
+  }
+}, { passive: true });
+
+/** 松手时判定是否为"快划翻页"：够快、够长、且横向占主导 */
+function endSwipe(t) {
+  if (!t || pinch.active || pages.length < 2) return;
+  if (zoomLevel > 1.05) return;             // 图已放大时横划是在平移画布
+  const dx = t.clientX - swipe.x;
+  const dy = t.clientY - swipe.y;
+  if (Date.now() - swipe.t > 500) return;
+  if (Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 2) return;
+  gotoPage(curPage + (dx < 0 ? 1 : -1));
+}
+
+/* -------------------------------------------------------- 专注（沉浸）模式 */
+
+/**
+ * 手机上顶栏 + 工具条能吃掉三分之一屏高，看谱时反而碍事。
+ * body.focus 下隐藏它们，只留舞台、状态栏和一条浮动操作条。
+ * @param {boolean} [on] 不传则按当前状态取反
+ */
+function toggleFocus(on) {
+  const next = on == null ? !document.body.classList.contains('focus') : !!on;
+  document.body.classList.toggle('focus', next);
+  layout();
+  drawBands();
+  setHint(next
+    ? '专注模式：已隐藏顶栏与侧栏（右上按钮或 Esc 退出），播放/翻页用屏幕底部那条浮动按钮'
+    : '已退出专注模式');
+}
+
+$('btnFocus').onclick = () => toggleFocus();
+$('focusExit').onclick = () => toggleFocus(false);
+$('dockPrev').onclick = () => gotoPage(curPage - 1);
+$('dockNext').onclick = () => gotoPage(curPage + 1);
+$('dockPlay').onclick = () => {
+  if (!playing) { play(); return; }
+  if (paused) resume(); else pause();
+};
+$('dockLoop').onclick = () => $('btnLoop').click();
 
 /* ------------------------------------------------------------ 每帧渲染 */
 
@@ -2233,12 +2885,14 @@ function tick() {
     t = loopA;
     sessLoops++;   // 循环次数进练习记录
     stepTrain();   // 渐进提速：每完成一轮加一档
+    startAudioAt(loopA);   // 伴奏跟着跳回 A（B→A 是瞬时跳变，必须重启音源）
   }
   const loc = locate(t);
   if (!loc) return;
   if (loc.page !== curPage) switchPageDisplay(loc.page);   // 跨页自动翻页
   showPosition(loc.band, loc.bar, loc.p);
   $('elapsed').textContent = (t / 1000).toFixed(1) + 's';
+  updateAudioHead(t);
 
   // 节拍器：稳定 BPM 下按全局拍号取模即可区分重拍
   const beatMs = 60000 / parseInt($('bpm').value, 10);
@@ -2409,6 +3063,8 @@ function applySettings(s) {
   const smInput = $('startMeasure');
   if (smInput) smInput.value = sm;
   drawBands();   // 起始小节号变更 → 重绘谱行标注
+
+  syncAudioRate();   // 变速：让正在响的伴奏跟着变，不重启音源
 
   magOn = !!s.magnifier;
   $('btnMag').classList.toggle('active', magOn);

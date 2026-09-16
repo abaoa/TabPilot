@@ -262,10 +262,55 @@
   #prepBox .pt:active { cursor: grabbing; transform: scale(1.15); }
   #prepBox.persp .pt { display: block; }
   #prepBox.persp #prepCanvas { cursor: crosshair; }
-  /* 提速训练（侧栏） */
+  <!-- 提速训练（侧栏） -->
   .trainRow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
   .trainRow .lbl { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--sub, #667085); }
   .trainRow input[type=number] { width: 52px; }
+
+  /* ---- 伴奏音频条（波形 + 自动测速 + 音画偏移） ---- */
+  .audioBar {
+    flex: 0 0 auto;
+    background: var(--card, #fff);
+    border-top: 1px solid var(--line, #e5e7eb);
+    padding: 6px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .audioBar .ab-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12.5px; }
+  .audioBar .ab-head .lbl { display: inline-flex; align-items: center; gap: 4px; color: var(--sub, #667085); }
+  .audioBar .ab-head input[type=number] { width: 66px; }
+  .ab-name { font-weight: 700; color: var(--ink, #1f2430); max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ab-bpm { color: var(--sub, #667085); font-variant-numeric: tabular-nums; }
+  .ab-bpm b { color: var(--brand, #2f6fed); font-size: 13px; }
+  .ab-wave-box {
+    position: relative; height: 56px; cursor: pointer;
+    background: var(--sunken, #f5f7fa);
+    border: 1px solid var(--line, #e5e7eb); border-radius: 8px; overflow: hidden;
+  }
+  .audioBar.collapsed .ab-wave-box { display: none; }
+  #waveCanvas { display: block; width: 100%; height: 100%; }
+  #waveHead {
+    position: absolute; top: 0; bottom: 0; left: 0; width: 2px;
+    background: var(--hl, #e11d48); box-shadow: 0 0 6px var(--hl, #e11d48);
+    display: none; pointer-events: none;
+  }
+  .ab-tip { font-size: 11.5px; color: var(--muted, #9aa5b8); line-height: 1.5; }
+  /* 沉浸模式下浮动控制：播放/翻页不用唤醒顶栏也能用 */
+  .touch-dock {
+    display: none;
+    position: fixed; z-index: 55;
+    left: 50%; transform: translateX(-50%);
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    gap: 8px; padding: 6px 10px;
+    background: var(--card, #fff);
+    border: 1px solid var(--line, #e5e7eb);
+    border-radius: var(--r-pill, 999px);
+    box-shadow: var(--sh-3, 0 12px 34px rgba(0,0,0,.18));
+    opacity: .93;
+  }
+  body.focus .touch-dock { display: flex; }
+  .touch-dock .btn { border-radius: var(--r-pill, 999px); }
 </style>
 </head>
 <body>
@@ -339,6 +384,7 @@
         <button class="btn block" id="btnOpenProj" title="打开工程文件，恢复谱图与谱行，免重框">📂 打开工程</button>
         <button class="btn block" id="btnPractice" title="查看练习时长 / 循环次数 / 速度等统计">📊 练习记录</button>
         <button class="btn block" id="btnMetro">🔔 节拍器</button>
+        <button class="btn block" id="btnFocus" title="隐藏顶栏与侧栏，把舞台放到最大（Esc 退出）">⤢ 专注模式</button>
         <button class="btn block" id="btnMag">🔍 放大镜</button>
         <button class="btn block" id="btnPanel">☰ 行列表</button>
       </div>
@@ -459,7 +505,43 @@
     <button class="mag-x" id="magClose" title="关闭放大镜" aria-label="关闭放大镜">✕</button>
     <canvas id="magCanvas" width="800" height="380"></canvas>
   </div>
+  <!-- 专注看谱时隐藏顶栏/侧栏的浮动出口 -->
+  <button class="btn focus-exit" id="focusExit" title="退出专注模式（Esc）" aria-label="退出专注模式">⤢</button>
+
+  <!-- 专注模式下浮动的常用操作条（免唤醒顶栏） -->
+  <div class="touch-dock" id="touchDock">
+    <button class="btn sm" id="dockPrev" title="上一页">◀</button>
+    <button class="btn sm primary" id="dockPlay" title="播放 / 暂停">▶</button>
+    <button class="btn sm" id="dockLoop" title="循环当前段落或 A/B 区间">🔁</button>
+    <button class="btn sm" id="dockNext" title="下一页">▶</button>
+  </div>
 </main>
+
+<!-- 伴奏音频条：波形 + 自动测速 + 音画偏移。放在 main 之外，避免受舞台滚动/裁切影响 -->
+<div class="audioBar collapsed" id="audioBar">
+  <div class="ab-head">
+    <span class="glabel">🎵 伴奏</span>
+    <button class="btn sm" id="btnAudioLoad">📂 导入音频</button>
+    <input type="file" id="audioInput" accept="audio/*,.mp3,.wav,.m4a,.ogg,audio/mpeg" style="display:none">
+    <button class="btn sm" id="btnAudioPlay" title="试听 / 暂停" style="display:none">▶</button>
+    <span class="ab-name" id="audioName">未加载</span>
+    <span class="ab-bpm" id="audioBpm"></span>
+    <button class="btn sm" id="btnBpmDetect" title="分析音频节拍，自动推算 BPM" style="display:none">🎯 自动测速</button>
+    <button class="btn sm" id="btnBpmUse" title="把检测到的 BPM 填入上方速度，并按它重排时间轴" style="display:none">✅ 采用</button>
+    <span class="lbl" id="offsetWrap" style="display:none" title="伴奏比视觉提前/滞后的毫秒数，正数表示音频延后">
+      偏移<input id="audioOffset" type="number" value="0" step="50" min="-3000" max="3000" aria-label="音画偏移毫秒">ms
+    </span>
+    <div class="spacer"></div>
+    <button class="btn sm" id="btnAudioClose" title="移除伴奏" style="display:none">✕</button>
+  </div>
+  <div class="ab-wave-box" id="waveBox" title="点击或拖动到任意位置开始试听">
+    <canvas id="waveCanvas" height="112"></canvas>
+    <div id="waveHead"></div>
+  </div>
+  <div class="ab-tip" id="audioTip" style="display:none">
+    时间轴仍由 BPM × 每行小节数决定；伴奏只是参考音轨。点波形可从头选段试听，「自动测速」能推算出音频自身的 BPM。
+  </div>
+</div>
 
 <footer class="app-footer">
   <div class="chip"><span class="led" id="led"></span><span id="modeText">待机</span></div>

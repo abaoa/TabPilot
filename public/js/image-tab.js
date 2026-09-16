@@ -70,6 +70,9 @@ let lastBeat = -1;
 let loopOn = false;
 let loopA = null;   // 循环起点（音乐时间 ms）
 let loopB = null;   // 循环终点（音乐时间 ms）
+/** 渐进提速：开关与已完成的循环轮数 */
+let trainOn = false;
+let trainCount = 0;
 /**
  * 视图模式：
  *   'flip'   翻页 —— 一次只显示一页，跨页时自动翻页（原行为）
@@ -1242,6 +1245,65 @@ function updateLoopUI() {
   $('btnLoop').classList.toggle('active', loopOn);
 }
 
+/* 练习：渐进提速 —— 每循环完一轮自动加一档，直到目标速度 */
+
+/** 读取并夹紧训练参数：起速 / 每轮增量 / 目标 */
+function trainParams() {
+  const from = Math.max(40, Math.min(100, parseInt($('trainFrom').value, 10) || 60));
+  const step = Math.max(1, Math.min(20, parseInt($('trainStep').value, 10) || 5));
+  const to = Math.max(from, Math.min(150, parseInt($('trainTo').value, 10) || 100));
+  return { from, step, to };
+}
+
+/** 开启 / 关闭渐进提速。提速必须有循环区间才有意义，否则提示先设 A/B */
+function toggleTrain() {
+  if (trainOn) {
+    trainOn = false;
+    updateTrainUI();
+    setHint('渐进提速已关闭');
+    return;
+  }
+  if (!loopOn || loopA == null || loopB == null || loopB <= loopA) {
+    setHint('渐进提速需要一个循环区间：先按 ⓐ / ⓑ 取点，或点某个段落的 ⟳');
+    return;
+  }
+  const { from } = trainParams();
+  trainOn = true;
+  trainCount = 0;
+  window.TPSettings.set('rate', from);   // 从慢速起跑
+  updateTrainUI();
+  setHint('渐进提速开始：每循环完一轮自动加一档，到目标速度为止');
+}
+
+/** 每次循环回绕时调用：加一档速度 */
+function stepTrain() {
+  if (!trainOn) return;
+  const { from, step, to } = trainParams();
+  trainCount++;
+  const nr = Math.min(to, from + step * trainCount);
+  window.TPSettings.set('rate', nr);
+  if (nr >= to) {
+    trainOn = false;
+    setHint('已练到目标速度 ' + to + '%，渐进提速结束');
+  }
+  updateTrainUI();
+}
+
+/** 同步提速按钮与底部芯片 */
+function updateTrainUI() {
+  const btn = $('btnTrain');
+  if (!btn) return;
+  btn.classList.toggle('active', trainOn);
+  btn.textContent = trainOn ? '⏹ 停止' : '▶ 开始';
+  const { from, step, to } = trainParams();
+  const cur = Math.round(window.TPSettings.get('rate') || 100);
+  $('trainChip').style.display = trainOn ? '' : 'none';
+  $('trainRange').textContent = cur + '%  ← ' + from + '%（第 ' + trainCount + ' 轮，+' + step + '%/轮，目标 ' + to + '%）';
+  $('trainTip').textContent = trainOn
+    ? ('训练中：当前 ' + cur + '%，已完成 ' + trainCount + ' 轮，每轮 +' + step + '%，到 ' + to + '% 自动停。')
+    : '设好 A/B 循环（ⓐⓑ 或段落的 ⟳）后开启，每循环一轮自动加一档，直到目标速度。';
+}
+
 /* ---------------------------------------------------- 工程文件（导入/导出） */
 
 /**
@@ -1517,6 +1579,10 @@ function exportPracticeCsv() {
 }
 
 $('btnPractice').onclick = openPractice;
+$('btnTrain').onclick = toggleTrain;
+['trainFrom', 'trainStep', 'trainTo'].forEach((id) => {
+  $(id).addEventListener('change', updateTrainUI);
+});
 $('pmClose').onclick = closePractice;
 $('practiceModal').onclick = (e) => { if (e.target.id === 'practiceModal') closePractice(); };
 $('pmExport').onclick = exportPracticeCsv;
@@ -1532,23 +1598,187 @@ document.addEventListener('keydown', (e) => {
   else if ($('prepModal').style.display === 'flex') closePrep();
 });
 
+/* ---------------------------------------------------- 透视矫正（四点拉正） */
+
+/** 四点是否构成一个可用的四边形（非退化、面积不为 0） */
+function validQuad(pts) {
+  if (!Array.isArray(pts) || pts.length !== 4) return false;
+  for (const p of pts) {
+    if (!Array.isArray(p) || p.length !== 2) return false;
+    if (!isFinite(p[0]) || !isFinite(p[1])) return false;
+  }
+  return Math.abs(quadArea(pts)) > 1;
+}
+
+/** 四边形有向面积（鞋带公式），用于排除退化四点 */
+function quadArea(pts) {
+  let s = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % 4];
+    s += a[0] * b[1] - b[0] * a[1];
+  }
+  return s / 2;
+}
+
+/**
+ * 求单应矩阵系数，把「归一化输出坐标 (u,v) ∈ [0,1]²」映射到源图四边形。
+ *
+ * 映射形式（四点共 8 个约束，解 8 个系数）：
+ *     x = (a·u + b·v + c) / (g·u + h·v + 1)
+ *     y = (d·u + e·v + f) / (g·u + h·v + 1)
+ * 角点约定：(0,0)→左上角 (1,0)→右上角 (1,1)→右下角 (0,1)→左下角。
+ *
+ * @param {number[][]} pts 源图上的四个角点（左上、右上、右下、左下），单位：像素
+ * @returns {{a,b,c,d,e,f,g,h}}
+ */
+function quadHomography(pts) {
+  const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = pts;
+  const dx1 = x1 - x2, dx2 = x3 - x2;
+  const dy1 = y1 - y2, dy2 = y3 - y2;
+  const sx = x0 - x1 + x2 - x3;
+  const sy = y0 - y1 + y2 - y3;
+  const det = dx1 * dy2 - dy1 * dx2;
+
+  let g = 0, h = 0;
+  if (Math.abs(sx) > 1e-9 || Math.abs(sy) > 1e-9) {
+    if (Math.abs(det) < 1e-9) return null;      // 退化四点，解不出来
+    g = (sx * dy2 - dx2 * sy) / det;
+    h = (dx1 * sy - sx * dy1) / det;
+  }
+  return {
+    a: x1 - x0 + g * x1,
+    b: x3 - x0 + h * x3,
+    c: x0,
+    d: y1 - y0 + g * y1,
+    e: y3 - y0 + h * y3,
+    f: y0,
+    g, h,
+  };
+}
+
+/** 用单应系数把归一化坐标投到源图像素坐标 */
+function homographyMap(H, u, v) {
+  const w = H.g * u + H.h * v + 1;
+  if (Math.abs(w) < 1e-9) return [0, 0];
+  return [(H.a * u + H.b * v + H.c) / w, (H.d * u + H.e * v + H.f) / w];
+}
+
+/** 透视环节的源像素缓存：拖动时反复 warp，避免每次都重新 getImageData */
+let warpCache = null;
+
+/**
+ * 透视矫正：把源图中被框出的四边形拉正成一张矩形图。
+ *
+ * Canvas 2D 的 setTransform 只支持仿射（平行四边形→平行四边形），做不了透视，
+ * 所以这里对每个输出像素做「反向映射 + 双线性采样」逐点搬像素。
+ *
+ * @param {HTMLImageElement|HTMLCanvasElement} src 源图
+ * @param {number[][]} pts 四角点（源图坐标）
+ * @param {number} [maxW] 输出最大宽度（预览用小图加速；0 = 不限制）
+ */
+function warpPerspective(src, pts, maxW) {
+  const H = quadHomography(pts);
+  if (!H) return null;
+
+  const sw = src.naturalWidth || src.width;
+  const sh = src.naturalHeight || src.height;
+  const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+  // 输出尺寸取对边的较大值，避免把内容压小
+  let W = Math.max(dist(pts[0], pts[1]), dist(pts[3], pts[2]));
+  let Hh = Math.max(dist(pts[0], pts[3]), dist(pts[1], pts[2]));
+  W = Math.max(16, Math.round(W));
+  Hh = Math.max(16, Math.round(Hh));
+
+  // 限制尺寸：预览（maxW）或防止像素爆炸
+  const cap = maxW || 2600;
+  if (W > cap) { Hh = Math.max(16, Math.round((Hh * cap) / W)); W = cap; }
+  if (W * Hh > 8e6) { const k = Math.sqrt(8e6 / (W * Hh)); W = Math.round(W * k); Hh = Math.round(Hh * k); }
+
+  const sCv = document.createElement('canvas');
+  sCv.width = sw;
+  sCv.height = sh;
+  const sctx = sCv.getContext('2d', { willReadFrequently: true });
+  sctx.drawImage(src, 0, 0, sw, sh);
+  // 源像素在连续拖动中会反复用到，缓存下来省掉每次几 MB 的重新采样
+  const key = (src.src || '') + '|' + sw + 'x' + sh;
+  let sd = null;
+  if (warpCache && warpCache.key === key) sd = warpCache.data;
+  if (!sd) {
+    sd = sctx.getImageData(0, 0, sw, sh).data;
+    warpCache = { key, data: sd };
+  }
+
+  const out = document.createElement('canvas');
+  out.width = W;
+  out.height = Hh;
+  const octx = out.getContext('2d');
+  const od = octx.createImageData(W, Hh);
+  const op = od.data;
+
+  for (let y = 0; y < Hh; y++) {
+    const v = y / (Hh - 1 || 1);
+    for (let x = 0; x < W; x++) {
+      const u = x / (W - 1 || 1);
+      const [sx, sy] = homographyMap(H, u, v);
+      const o = (y * W + x) * 4;
+
+      if (sx < 0 || sy < 0 || sx > sw - 1 || sy > sh - 1) {
+        op[o] = op[o + 1] = op[o + 2] = 255;
+        op[o + 3] = 255;
+        continue;
+      }
+      // 双线性采样：直接取最近邻会有明显锯齿
+      const x0 = Math.floor(sx), y0 = Math.floor(sy);
+      const x1 = Math.min(sw - 1, x0 + 1), y1 = Math.min(sh - 1, y0 + 1);
+      const fx = sx - x0, fy = sy - y0;
+      const i00 = (y0 * sw + x0) * 4;
+      const i10 = (y0 * sw + x1) * 4;
+      const i01 = (y1 * sw + x0) * 4;
+      const i11 = (y1 * sw + x1) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const top = sd[i00 + ch] * (1 - fx) + sd[i10 + ch] * fx;
+        const bot = sd[i01 + ch] * (1 - fx) + sd[i11 + ch] * fx;
+        op[o + ch] = top * (1 - fy) + bot * fy;
+      }
+      op[o + 3] = 255;
+    }
+  }
+  octx.putImageData(od, 0, 0);
+  return out;
+}
+
 /* -------------------------------------------------------------- 图片预处理 */
 
 /**
  * 预处理参数（每次打开修图面板重置，点「应用」才真正写回页面）。
  * 只记几何/增强开关，不缓存像素 —— 换页或改参数都重算一遍，逻辑最简单。
  */
-let prep = { rot: 0, flip: false, crop: false, enhance: false, level: 55 };
+let prep = { rot: 0, flip: false, crop: false, enhance: false, persp: false, level: 55, pts: null };
+/** 透视角点所在的源图尺寸（预览缩放换算用） */
+let prepBaseW = 0;
+let prepBaseH = 0;
+
+/** 初始化四点：贴着原图边角往里收 3%，省得用户从零开始拖 */
+function defaultQuad(w, h) {
+  const mx = w * 0.03;
+  const my = h * 0.03;
+  return [[mx, my], [w - mx, my], [w - mx, h - my], [mx, h - my]];
+}
 
 /** 打开修图面板并预览当前页 */
 function openPrep() {
   if (!pages[curPage] || !pages[curPage].img.naturalWidth) { setHint('请先加载谱图'); return; }
   $('morePop').classList.remove('open');
-  prep = { rot: 0, flip: false, crop: false, enhance: false, level: parseInt($('prepLevel').value, 10) || 55 };
+  const lv = parseInt($('prepLevel').value, 10) || 55;
+  prepBaseW = pages[curPage].img.naturalWidth;
+  prepBaseH = pages[curPage].img.naturalHeight;
+  prep = { rot: 0, flip: false, crop: false, enhance: false, persp: false, level: lv, pts: defaultQuad(prepBaseW, prepBaseH) };
   $('prepPageNo').textContent = curPage + 1;
   syncPrepUI();
   $('prepModal').style.display = 'flex';
   renderPrep();
+  layoutHandles();
 }
 
 function closePrep() { $('prepModal').style.display = 'none'; }
@@ -1558,45 +1788,74 @@ function syncPrepUI() {
   $('prepFlip').classList.toggle('active', prep.flip);
   $('prepCrop').classList.toggle('active', prep.crop);
   $('prepEnh').classList.toggle('active', prep.enhance);
+  $('prepPersp').classList.toggle('active', prep.persp);
+  $('prepBox').classList.toggle('persp', prep.persp);
   $('prepLevel').value = prep.level;
   $('prepLevelVal').textContent = prep.level;
 }
 
 /**
- * 按当前 prep 参数生成一张处理好的全分辨率 canvas。
- * 顺序：几何（旋转/镜像）→ 裁白边 → 去阴影增强。
+ * 按当前 prep 参数生成一张处理好的 canvas。
+ * 管线顺序（不能颠倒）：透视矫正 → 几何（旋转/镜像）→ 裁白边 → 去阴影增强。
+ * @param {Object}   pg  页对象
+ * @param {Object}   opt 预处理参数
+ * @param {number}  [maxW] 透视环节的最大输出宽度（预览用小图，应用时用全分辨率）
  */
-function prepCanvas(pg, opt) {
+function prepCanvas(pg, opt, maxW) {
   const src = pg.img;
   const nw = src.naturalWidth;
   const nh = src.naturalHeight;
-  const r = ((opt.rot % 360) + 360) % 360;
-  const swap = (r === 90 || r === 270);
 
-  let cv = document.createElement('canvas');
-  cv.width = swap ? nh : nw;
-  cv.height = swap ? nw : nh;
-  const ctx = cv.getContext('2d', { willReadFrequently: true });
-  ctx.save();
-  ctx.translate(cv.width / 2, cv.height / 2);
-  ctx.rotate((r * Math.PI) / 180);
-  if (opt.flip) ctx.scale(-1, 1);
-  ctx.drawImage(src, -nw / 2, -nh / 2, nw, nh);
-  ctx.restore();
+  // ① 透视矫正（可选）：四点拉正后再走后续步骤
+  let base = null;
+  if (opt.persp && validQuad(opt.pts)) {
+    base = warpPerspective(src, opt.pts, maxW || 0);
+  }
+  if (!base) {
+    base = document.createElement('canvas');
+    base.width = nw;
+    base.height = nh;
+    base.getContext('2d').drawImage(src, 0, 0, nw, nh);
+  }
 
+  // ② 几何变换
+  let cv = rotateCanvas(base, opt.rot, opt.flip);
+
+  // ③ 裁白边
   if (opt.crop) {
     const c2 = cropWhite(cv);
     if (c2) cv = c2;
   }
+  // ④ 增强
   if (opt.enhance && opt.level > 0) enhanceContrast(cv, opt.level);
   return cv;
 }
 
-/** 预览：把处理结果等比缩放到面板宽度 */
-function renderPrep() {
+/** 把 canvas 旋转 90° 的整数倍（可叠加水平镜像） */
+function rotateCanvas(srcCv, rot, flip) {
+  const r = ((rot % 360) + 360) % 360;
+  const swap = (r === 90 || r === 270);
+  const cv = document.createElement('canvas');
+  cv.width = swap ? srcCv.height : srcCv.width;
+  cv.height = swap ? srcCv.width : srcCv.height;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.save();
+  ctx.translate(cv.width / 2, cv.height / 2);
+  ctx.rotate((r * Math.PI) / 180);
+  if (flip) ctx.scale(-1, 1);
+  ctx.drawImage(srcCv, -srcCv.width / 2, -srcCv.height / 2);
+  ctx.restore();
+  return cv;
+}
+
+/**
+ * 预览：把处理结果等比缩放到面板宽度。
+ * @param {number} [budget] 透视环节的输出宽度上限。拖动中用小图保帧率，松手后再出清晰预览。
+ */
+function renderPrep(budget) {
   const pg = pages[curPage];
   if (!pg || !pg.img.naturalWidth) return;
-  const cv = prepCanvas(pg, prep);
+  const cv = prepCanvas(pg, prep, budget || 900);
   const box = $('prepCanvas');
   const maxW = 760;
   const s = Math.min(1, maxW / cv.width);
@@ -1608,6 +1867,59 @@ function renderPrep() {
   bctx.fillRect(0, 0, box.width, box.height);
   bctx.drawImage(cv, 0, 0, box.width, box.height);
 }
+
+/** 把四个拖点摆到预览图上对应的位置 */
+function layoutHandles() {
+  if (!prep.persp || !prep.pts) return;
+  const cvEl = $('prepCanvas');
+  const boxEl = $('prepBox');
+  const r = cvEl.getBoundingClientRect();
+  const b = boxEl.getBoundingClientRect();
+  const sx = prepBaseW ? r.width / prepBaseW : 0;
+  const sy = prepBaseH ? r.height / prepBaseH : 0;
+  if (!sx || !sy) return;
+  boxEl.querySelectorAll('.pt').forEach((el) => {
+    const p = prep.pts[+el.dataset.i];
+    if (!p) return;
+    el.style.left = (r.left - b.left + p[0] * sx) + 'px';
+    el.style.top = (r.top - b.top + p[1] * sy) + 'px';
+  });
+}
+
+/* 拖点交互：按下选中某个角，移动时换算回源图坐标并重算预览 */
+let dragPt = -1;
+function ptFromEvent(e, idx) {
+  const r = $('prepCanvas').getBoundingClientRect();
+  const sx = r.width ? prepBaseW / r.width : 0;
+  const sy = r.height ? prepBaseH / r.height : 0;
+  if (!sx || !sy) return;
+  const x = Math.max(0, Math.min(prepBaseW, (e.clientX - r.left) * sx));
+  const y = Math.max(0, Math.min(prepBaseH, (e.clientY - r.top) * sy));
+  prep.pts[idx] = [x, y];
+}
+
+$('prepBox').querySelectorAll('.pt').forEach((el) => {
+  const idx = +el.dataset.i;
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragPt = idx;
+    el.setPointerCapture && el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (dragPt !== idx) return;
+    ptFromEvent(e, idx);
+    layoutHandles();
+    renderPrep(420);          // 拖动中小图预览，保证跟手
+  });
+  el.addEventListener('pointerup', (e) => {
+    if (dragPt !== idx) return;
+    dragPt = -1;
+    el.releasePointerCapture && el.releasePointerCapture(e.pointerId);
+    renderPrep();             // 松手后再出清晰预览
+  });
+  el.addEventListener('pointercancel', () => { dragPt = -1; });
+});
 
 /** 求内容（暗像素）包围盒；整幅全白时返回 null 表示「没什么可裁」 */
 function contentBounds(cv) {
@@ -1754,8 +2066,8 @@ function replacePageImage(pi, url, keepBands) {
 function applyPrep() {
   const pg = pages[curPage];
   if (!pg || !pg.img.naturalWidth) return;
-  if (!prep.rot && !prep.flip && !prep.crop && !prep.enhance) { setHint('没有做任何调整'); return; }
-  const cv = prepCanvas(pg, prep);
+  if (!prep.rot && !prep.flip && !prep.crop && !prep.enhance && !prep.persp) { setHint('没有做任何调整'); return; }
+  const cv = prepCanvas(pg, prep, 0);
   let url;
   try {
     url = cv.toDataURL('image/jpeg', 0.92);
@@ -1777,9 +2089,13 @@ function resetPageImage() {
   const orig = pg.orig || pg.src;
   replacePageImage(curPage, orig, false);
   renderBandList();
-  prep = { rot: 0, flip: false, crop: false, enhance: false, level: prep.level };
+  prep = {
+    rot: 0, flip: false, crop: false, enhance: false, persp: false,
+    level: prep.level, pts: prep.pts,
+  };
   syncPrepUI();
   renderPrep();
+  layoutHandles();
   setHint('已还原当前页原图，谱行需重新识别');
 }
 
@@ -1791,6 +2107,14 @@ $('prepRotR').onclick = () => { prep.rot += 90; renderPrep(); };
 $('prepFlip').onclick = () => { prep.flip = !prep.flip; syncPrepUI(); renderPrep(); };
 $('prepCrop').onclick = () => { prep.crop = !prep.crop; syncPrepUI(); renderPrep(); };
 $('prepEnh').onclick = () => { prep.enhance = !prep.enhance; syncPrepUI(); renderPrep(); };
+$('prepPersp').onclick = () => {
+  prep.persp = !prep.persp;
+  if (prep.persp && !validQuad(prep.pts)) prep.pts = defaultQuad(prepBaseW, prepBaseH);
+  syncPrepUI();
+  renderPrep();
+  layoutHandles();
+  if (prep.persp) setHint('透视矫正：把四个角点拖到谱面的四个角上，再点「应用」把斜拍的谱拉正。');
+};
 $('prepLevel').oninput = (e) => {
   prep.level = parseInt(e.target.value, 10);
   $('prepLevelVal').textContent = prep.level;
@@ -1908,6 +2232,7 @@ function tick() {
     t0 = performance.now();
     t = loopA;
     sessLoops++;   // 循环次数进练习记录
+    stepTrain();   // 渐进提速：每完成一轮加一档
   }
   const loc = locate(t);
   if (!loc) return;
@@ -2109,4 +2434,5 @@ window.addEventListener('DOMContentLoaded', () => {
   layout();
   renderPageNav();
   renderSections();
+  updateTrainUI();
 });

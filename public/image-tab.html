@@ -242,14 +242,30 @@
 
   /* ---- 修图面板 ---- */
   .prep-canvas-box {
+    position: relative; display: inline-block; max-width: 100%;
     background: repeating-conic-gradient(#e9ecf1 0% 25%, #fff 0% 50%) 50% / 18px 18px;
     border: 1px solid var(--line, #e5e7eb); border-radius: 10px;
-    padding: 6px; margin-bottom: 10px; text-align: center;
+    padding: 6px; margin-bottom: 10px; text-align: center; touch-action: none;
   }
   #prepCanvas { max-width: 100%; height: auto; display: block; margin: 0 auto; border-radius: 4px; }
   .prep-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
   .prep-bar .lbl { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--sub, #667085); }
   .prep-bar input[type=range] { width: 96px; }
+  /* 透视矫正的四个拖拽角点 */
+  #prepBox .pt {
+    position: absolute; display: none;
+    width: 18px; height: 18px; margin: -9px 0 0 -9px;
+    border-radius: 50%; background: var(--brand, #2f6fed);
+    border: 2px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.45);
+    cursor: grab; z-index: 3;
+  }
+  #prepBox .pt:active { cursor: grabbing; transform: scale(1.15); }
+  #prepBox.persp .pt { display: block; }
+  #prepBox.persp #prepCanvas { cursor: crosshair; }
+  /* 提速训练（侧栏） */
+  .trainRow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .trainRow .lbl { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--sub, #667085); }
+  .trainRow input[type=number] { width: 52px; }
 </style>
 </head>
 <body>
@@ -355,6 +371,16 @@
       <b id="pageNum">0</b><span class="slash">/</span><b id="pageTotal">0</b>
       <button class="btn sm" id="btnNextPage" aria-label="下一页">▶</button>
     </div>
+    <div class="secBox" id="trainBox">
+      <h4>🚀 渐进提速（每循环一轮自动加速）</h4>
+      <div class="trainRow">
+        <span class="lbl">起<input id="trainFrom" type="number" min="40" max="100" step="5" value="60" aria-label="起始速度">%</span>
+        <span class="lbl">每轮 +<input id="trainStep" type="number" min="1" max="20" step="1" value="5" aria-label="每轮加速">%</span>
+        <span class="lbl">到<input id="trainTo" type="number" min="50" max="150" step="5" value="100" aria-label="目标速度">%</span>
+        <button class="btn sm" id="btnTrain" title="需要先把 A/B 循环设好">▶ 开始</button>
+      </div>
+      <div class="secTip" id="trainTip">设好 A/B 循环（ⓐⓑ 或段落的 ⟳）后开启，每循环一轮自动加一档，直到目标速度。</div>
+    </div>
     <div class="secBox" id="secBox">
       <h4>🏷 段落（点击跳段首，⟳ 循环该段）</h4>
       <div class="secAdd">
@@ -384,8 +410,12 @@
         <b>🛠 修图（第 <span id="prepPageNo">1</span> 页）</b>
         <button class="x" id="prepClose" title="关闭" aria-label="关闭">✕</button>
       </div>
-      <div class="prep-canvas-box">
+      <div class="prep-canvas-box" id="prepBox">
         <canvas id="prepCanvas" width="760" height="420"></canvas>
+        <div class="pt" data-i="0" title="左上角"></div>
+        <div class="pt" data-i="1" title="右上角"></div>
+        <div class="pt" data-i="2" title="右下角"></div>
+        <div class="pt" data-i="3" title="左下角"></div>
       </div>
       <div class="prep-bar">
         <button class="btn sm" id="prepRotL" title="逆时针 90°">↺ 左转</button>
@@ -393,6 +423,7 @@
         <button class="btn sm" id="prepFlip" title="水平镜像（翻面拍摄的谱图用）">⇋ 镜像</button>
         <button class="btn sm" id="prepCrop" title="自动裁掉四周空白">✂ 裁白边</button>
         <button class="btn sm" id="prepEnh" title="去阴影 + 对比度拉伸">🌓 增强</button>
+        <button class="btn sm" id="prepPersp" title="拖动四个角点，把斜拍的谱面拉正（透视矫正）">⿰ 透视矫正</button>
         <span class="lbl">强度<input id="prepLevel" type="range" min="10" max="100" step="5" value="55" aria-label="增强强度"><b id="prepLevelVal">55</b></span>
       </div>
       <p class="pm-sub">处理只作用于当前页，确认无误后点「应用」；谱行坐标会失效，需要重新识别一次。</p>
@@ -434,6 +465,7 @@
   <div class="chip"><span class="led" id="led"></span><span id="modeText">待机</span></div>
   <div class="chip">当前行 <b id="bandNum">-</b></div>
   <div class="chip">当前小节 <b id="barNum">-</b></div>
+  <div class="chip" id="trainChip" style="display:none">提速 <b id="trainRange">-</b></div>
   <div class="chip" id="secChip" style="display:none">段落 <b id="secName">-</b></div>
   <div class="chip" id="loopChip" style="display:none">循环 <b id="loopRange">-</b></div>
   <div class="chip">行进时间 <b id="elapsed">0.0s</b></div>

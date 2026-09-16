@@ -264,6 +264,42 @@ window.addEventListener('load', function () {
           closePractice();
           ok('练习面板：关闭后隐藏', getComputedStyle(document.getElementById('practiceModal')).display === 'none');
 
+          // ===== 新增：渐进提速训练 =====
+          loopOn = false; loopA = null; loopB = null; trainOn = false; trainCount = 0;
+          document.getElementById('btnTrain').click();
+          ok('提速：没设循环区间时不启动', trainOn === false);
+          loopOn = true; loopA = 0; loopB = 1000;
+          document.getElementById('trainFrom').value = '60';
+          document.getElementById('trainStep').value = '5';
+          document.getElementById('trainTo').value = '100';
+          document.getElementById('btnTrain').click();
+          ok('提速：设好循环后可启动', trainOn === true);
+          ok('提速：启动即回到起始速度 60%', window.TPSettings.get('rate') === 60,
+            'rate=' + window.TPSettings.get('rate'));
+          stepTrain();
+          ok('提速：完成一轮后 +5% → 65%', window.TPSettings.get('rate') === 65,
+            'rate=' + window.TPSettings.get('rate'));
+          stepTrain(); stepTrain();
+          ok('提速：三轮后 → 75%', window.TPSettings.get('rate') === 75,
+            'rate=' + window.TPSettings.get('rate'));
+          for (var ti = 0; ti < 10; ti++) { stepTrain(); }
+          ok('提速：到目标 100% 后不再往上超', window.TPSettings.get('rate') === 100,
+            'rate=' + window.TPSettings.get('rate'));
+          ok('提速：到达目标后自动关闭', trainOn === false);
+          ok('提速：结束后底部芯片隐藏', getComputedStyle(document.getElementById('trainChip')).display === 'none');
+          document.getElementById('trainFrom').value = '300';
+          document.getElementById('trainStep').value = '99';
+          document.getElementById('trainTo').value = '40';
+          var tpBad = trainParams();
+          ok('提速：参数越界被夹紧（from≤100、step≤20、to≥from）',
+            tpBad.from === 100 && tpBad.step === 20 && tpBad.to === 100, JSON.stringify(tpBad));
+          document.getElementById('trainFrom').value = '60';
+          document.getElementById('trainStep').value = '5';
+          document.getElementById('trainTo').value = '100';
+          window.TPSettings.set('rate', 100);
+          updateTrainUI();
+          loopOn = false;
+
           // ===== 新增：PDF 导入（真实渲染需二进制 PDF，这里只测类型分发） =====
           ok('PDF 识别：.pdf 扩展名', isPdfFile({ name: 'a.pdf', type: '' }) === true);
           ok('PDF 识别：application/pdf 的 MIME', isPdfFile({ name: 'x', type: 'application/pdf' }) === true);
@@ -287,6 +323,35 @@ window.addEventListener('load', function () {
           document.getElementById('prepEnh').click();
           ok('修图：镜像 / 裁边 / 增强三个开关都生效',
             prep.flip === true && prep.crop === true && prep.enhance === true);
+          // ---- 透视矫正（四点拉正）----
+          var H = quadHomography([[10, 20], [210, 30], [200, 130], [20, 120]]);
+          function mapPt(u, v) { return homographyMap(H, u, v); }
+          function near(a, b) { return Math.abs(a - b) < 0.01; }
+          var m00 = mapPt(0, 0), m10 = mapPt(1, 0), m11 = mapPt(1, 1), m01 = mapPt(0, 1);
+          ok('透视：单应矩阵把 (0,0) 映射到左上角', near(m00[0], 10) && near(m00[1], 20), JSON.stringify(m00));
+          ok('透视：把 (1,0) 映射到右上角', near(m10[0], 210) && near(m10[1], 30), JSON.stringify(m10));
+          ok('透视：把 (1,1) 映射到右下角', near(m11[0], 200) && near(m11[1], 130), JSON.stringify(m11));
+          ok('透视：把 (0,1) 映射到左下角', near(m01[0], 20) && near(m01[1], 120), JSON.stringify(m01));
+          ok('透视：矩形四点是纯仿射（g=h=0）', quadHomography([[0, 0], [100, 0], [100, 50], [0, 50]]).g === 0);
+          ok('validQuad：正常四边形为 true', validQuad([[0, 0], [100, 0], [100, 50], [0, 50]]) === true);
+          ok('validQuad：退化成直线为 false', validQuad([[0, 0], [100, 0], [50, 0], [25, 0]]) === false);
+          ok('validQuad：点不足 / 含 NaN 为 false',
+            validQuad([[0, 0], [1, 1]]) === false && validQuad([[0, 0], [1, NaN], [1, 1], [0, 1]]) === false);
+          var warped = warpPerspective(pages[0].img, [[0, 0], [100, 0], [110, 90], [0, 90]], 0);
+          ok('透视：输出尺寸取对边较大值（宽 110 / 高 91）',
+            !!warped && warped.width === 110 && warped.height === 91,
+            warped ? warped.width + 'x' + warped.height : 'null');
+
+          document.getElementById('prepPersp').click();
+          ok('透视：开关打开后置 persp=true、容器加 .persp',
+            prep.persp === true && document.getElementById('prepBox').classList.contains('persp'));
+          ok('透视：默认四点贴合四角且 validQuad 为真', validQuad(prep.pts) === true, JSON.stringify(prep.pts));
+          var pgcP = prepCanvas(pages[0], prep, 900);
+          ok('透视：开启后生成的是拉正后的矩形 canvas', !!pgcP && pgcP.width > 0 && pgcP.height > 0,
+            pgcP ? pgcP.width + 'x' + pgcP.height : 'null');
+          document.getElementById('prepPersp').click();
+          ok('透视：再次点击可关闭', prep.persp === false);
+
           var pgc = prepCanvas(pages[0], prep);
           ok('修图：旋转 90° 后 canvas 宽高互换（1000×1400 → 1400×1000）',
             pgc.width === 1400 && pgc.height === 1000, pgc.width + 'x' + pgc.height);
@@ -327,7 +392,9 @@ window.addEventListener('load', function () {
 `;
 win.eval(test);
 
-await new Promise((r) => setTimeout(r, 2500));
+// 等待页面跑完异步断言链。透视矫正在 jsdom 里是纯 JS 逐像素重采样（无 GPU），
+// 单次百万级像素耗时较长，预算给到 9 秒。
+await new Promise((r) => setTimeout(r, 9000));
 const pre = win.document.getElementById('VERIFY');
 const report = pre ? pre.textContent : '(未生成报告 —— 页面可能有异常)';
 console.log(report);

@@ -112,6 +112,13 @@
 
   /* 未载入谱图时隐藏空 <img>（否则会显示破图占位），并给出居中引导 */
   #tabImg:not([src]) { display: none; }
+  /* 拖文件时给舞台一个明显的落点提示（pointer-events:none 由子元素保证不吞事件） */
+  #stage.dropOn { outline: 2px dashed var(--brand, #2f6fed); outline-offset: -6px; }
+  #stage.dropOn::after {
+    content: '松手即可导入';
+    position: absolute; inset: auto 0 10px; text-align: center;
+    font-size: 13px; color: var(--brand, #2f6fed); pointer-events: none;
+  }
   .stageEmpty {
     position: absolute;
     inset: 0;
@@ -343,7 +350,7 @@
       <span class="glabel">文件</span>
       <button class="btn primary" id="btnLoad">📂 加载谱图</button>
       <button class="btn" id="btnAdd">➕ 追加页</button>
-      <input type="file" id="fileInput" accept="image/*,.pdf,application/pdf" multiple style="display:none">
+      <input type="file" id="fileInput" accept="image/*,.pdf,application/pdf,audio/*,.mp3,.wav,.m4a,.ogg,.tabpilot,.json,application/json" multiple style="display:none">
     </div>
 
     <div class="group">
@@ -380,15 +387,16 @@
       <button class="btn" id="btnMore" aria-haspopup="true" aria-expanded="false">⋯ 更多</button>
       <div class="menu-pop" id="morePop" role="menu">
         <button class="btn block" id="btnDemo">🖼 示例谱</button>
-        <button class="btn block" id="btnSaveProj" title="把谱图与已框选/识别的谱行存成一个工程文件">💾 保存工程</button>
-        <button class="btn block" id="btnOpenProj" title="打开工程文件，恢复谱图与谱行，免重框">📂 打开工程</button>
+<button class="btn block" id="btnSaveProj" title="把谱图与已框选/识别的谱行存成一个工程文件">💾 保存工程</button>
+<button class="btn block" id="btnOpenProj" title="打开工程文件，恢复谱图与谱行，免重框">📂 打开工程</button>
+<button class="btn block" id="btnSaveBundle" title="把谱图、识别结果、段落标记和伴奏音频打包成一个 .tabpilot 文件">📦 打包 .tabpilot</button>
         <button class="btn block" id="btnPractice" title="查看练习时长 / 循环次数 / 速度等统计">📊 练习记录</button>
         <button class="btn block" id="btnMetro">🔔 节拍器</button>
         <button class="btn block" id="btnFocus" title="隐藏顶栏与侧栏，把舞台放到最大（Esc 退出）">⤢ 专注模式</button>
         <button class="btn block" id="btnMag">🔍 放大镜</button>
         <button class="btn block" id="btnPanel">☰ 行列表</button>
       </div>
-      <input type="file" id="projInput" accept=".json,application/json" style="display:none">
+      <input type="file" id="projInput" accept=".json,.tabpilot,application/json" style="display:none">
     </div>
   </div>
 </header>
@@ -397,7 +405,7 @@
   <div class="stage" id="stage">
     <div id="stageEmpty" class="stageEmpty">
       <b>还没有载入谱图</b>
-      <span>点「📂 加载谱图」可一次性多选同一首歌的多张图片（每张 = 一页，按顺序拼成一条时间轴）；<br>也支持直接导入 <b>PDF 吉他谱</b>（每一页渲染成一张谱图）。<br>也可以从「⋯ 更多 → 🖼 示例谱」先试玩一下。</span>
+      <span>点「📂 加载谱图」可一次性多选同一首歌的多张图片（每张 = 一页，按顺序拼成一条时间轴）；<br>也支持直接导入 <b>PDF 吉他谱</b>（每一页渲染成一张谱图）。<br><b>谱图 / PDF / 伴奏 / .tabpilot 打包文件都可以直接拖到这里。</b><br>也可以从「⋯ 更多 → 🖼 示例谱」先试玩一下。</span>
     </div>
     <div id="imgWrap">
       <img id="tabImg" alt="谱图">

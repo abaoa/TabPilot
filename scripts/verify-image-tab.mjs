@@ -64,6 +64,10 @@ class FakeImage {
 }
 win.Image = FakeImage;
 
+// jsdom 不往 window 上挂 TextEncoder/TextDecoder，而 .tabpilot 打包用到了它们
+win.TextEncoder = TextEncoder;
+win.TextDecoder = TextDecoder;
+
 /* ------------------------------------------------------- 页面内断言脚本 */
 const test = `
 window.__R = [];
@@ -445,6 +449,37 @@ window.addEventListener('load', function () {
               ok('波形：脉冲所在列取到正峰值', hasAmp);
               ok('自动测速：AudioBuffer 入口可达同样结果',
                 Math.abs(detectBpmBuffer({ duration: SECS, sampleRate: SR, getChannelData: function () { return ch120; } }, 60) - 120) <= 2);
+
+              // ===== 新增：.tabpilot 单文件打包（往返还原） =====
+              // 关键不是"能打包"，而是导出字节能被 applyBundleBytes 完整还原，
+              // 且截断/畸形容器必须抛错，绝不能静默产出残缺工程。
+              // 注意：必须在「空页工程还原」用例之前跑，否则 pages 已被置空。
+              var sj = buildProject();
+              ok('打包：buildProject 产出可被序列化的工程', sj && sj.app === 'TabPilot' && Array.isArray(sj.pages) && sj.pages.length > 0,
+                'pages=' + (sj && sj.pages ? sj.pages.length : 0));
+              var sp = JSON.stringify(sj);
+              var packed = packBundle([{ key: 'project', data: sp, meta: { type: 'application/json' } }]);
+              var raw = bundleBytes(packed);
+              ok('打包：导出字节能被 isBundle 识别', isBundle(raw));
+              ok('打包：magic 之后紧跟单行 JSON 头', new TextDecoder().decode(raw.subarray(0, raw.indexOf(0x0a))) === 'TABPILOT/1');
+
+              var back = unpackBundle(raw);
+              ok('打包：project 段逐字往返一致', new TextDecoder().decode(back.parts.project.bytes) === sp,
+                'len=' + back.parts.project.bytes.length);
+              ok('打包：头部记录了工程段长度', back.head.parts.length === 1 && back.head.parts[0].key === 'project');
+
+              // 全链路：applyBundleBytes 把字节还原成同样数量的页
+              var nBefore = pages.length;
+              applyBundleBytes(raw);
+              ok('打包：applyBundleBytes 还原页数一致', pages.length === nBefore && pages.length > 0,
+                'before=' + nBefore + ' after=' + pages.length);
+
+              var badThrew = false;
+              try { unpackBundle(raw.slice(0, 40)); } catch (e) { badThrew = true; }
+              ok('打包：截断容器抛错而非静默返回', badThrew);
+              var magicThrew = false;
+              try { var b2 = raw.slice(); b2[0] = 0x58; unpackBundle(b2); } catch (e) { magicThrew = true; }
+              ok('打包：magic 被改的文件被拒（不是容器）', magicThrew);
 
               audioOffset = 250;
               ok('工程导出：音画偏移随 settings 保存', buildProject().settings.audioOffset === 250);

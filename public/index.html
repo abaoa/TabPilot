@@ -73,6 +73,14 @@
       <span class="glabel">视图</span>
       <button class="btn" id="btnMag">🔍 放大镜</button>
     </div>
+
+    <div class="group">
+      <span class="glabel">移调</span>
+      <button class="btn" id="btnTrDown" title="降半音" aria-label="降半音">♭</button>
+      <b id="trVal">原调</b>
+      <button class="btn" id="btnTrUp" title="升半音" aria-label="升半音">♯</button>
+      <button class="btn" id="btnTrReset" title="回到原调" aria-label="回到原调">⟲ 原调</button>
+    </div>
   </div>
 </header>
 
@@ -94,6 +102,7 @@
   <div class="chip">跟随置信度 <div class="meter"><i id="conf"></i></div></div>
   <div class="chip">输入电平 <div class="meter brand"><i id="lvl"></i></div></div>
   <div class="chip">实时速度 <b id="speedVal">-</b></div>
+  <div class="chip" id="trChip" title="移调会同时改变显示、播放音高与 OTW 跟随的比对基准">移调 <b id="keyVal">原调</b></div>
   <div class="hint" id="hint"></div>
 </footer>
 

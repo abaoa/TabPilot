@@ -80,11 +80,14 @@ let micGate = -72;
 let hlEl = null;
 /** 放大镜开关 */
 let magOn = false;
+/** 移调半音数（-12 – +12），0 = 原调 */
+let transpose = 0;
 
 /* ------------------------------------------------------------ alphaTab 初始化 */
 
 /** 初始化 alphaTab 并载入默认演示曲 */
 function initTab() {
+  transpose = clampTranspose(window.TPSettings.get('transpose'));
   if (!window.alphaTab) {
     showFallback('alphaTab 脚本加载失败，请确认 vendor/alphaTab.js 存在后刷新页面。');
     return;
@@ -104,6 +107,9 @@ function initTab() {
         soundFont: 'vendor/sonivox.sf3',
       },
       display: { zoom: 1.0 },
+      // 恢复上次用过的移调：构造时就带上，载入的谱一开始就是移调后的状态，
+      // 省得"先按原调渲染一遍、再改设置重渲染"浪费一次渲染
+      notation: { transpositionPitches: [transpose] },
     });
   } catch (e) {
     console.error(e);
@@ -111,7 +117,12 @@ function initTab() {
     return;
   }
 
-  api.scoreLoaded.on((score) => buildReference(score));
+  // 换谱/换曲时 alphaTab 会按 settings 重新套用移调，只有 ScoreLoader 最清楚结果，
+  // 所以这里直接用它给的 score 重建参考（此时音符的 realValue 已是移调后的音高）
+  api.scoreLoaded.on((score) => {
+    buildReference(score);
+    updateTransposeUI();
+  });
 
   // 点击谱面重定位：跟随模式下直接跳到被点击的那一拍
   try {
@@ -782,6 +793,114 @@ function runSim() {
   syncButtons('btnSim');
 }
 
+/* ---------------------------------------------------------------- 移调 */
+
+/**
+ * 常用移调只在一个八度内有意义（再往上/下用「换弦+升八度」表达更清楚），
+ * 而 keysignature 拼写也只在 ±12 半音内能给出人读得懂的调名。
+ */
+function clampTranspose(n) {
+  n = Math.round(Number(n) || 0);
+  return Math.max(-12, Math.min(12, n));
+}
+
+/** 十二音的音名拼写：往上升用升号、往下降用降号，避免出现 C## / Bbb 这种叠符号 */
+const PC_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const PC_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+/** 按半音数查音程名称，用于把 "+2" 翻译成人话 */
+const INTERVALS = ['纯一度', '小二度', '大二度', '小三度', '大三度', '纯四度',
+  '增四度', '纯五度', '小六度', '大六度', '小七度', '大七度', '纯八度'];
+
+/**
+ * alphaTab 的 keySignature 存的是「五度圈上的位置」：
+ *   C=0, G=1, D=2, A=3, E=4, B=5, F#=6, C#=7，反向 F=-1, Bb=-2 …
+ * 主音在十二音筒上的位置正好是 (7 × ks) mod 12 —— 15 个调逐个验算都成立。
+ */
+function keyPc(ks) { return ((7 * (ks || 0)) % 12 + 12) % 12; }
+
+/** 取当前谱的首小节调号；取不到按 C 处理 */
+function scoreKey() {
+  try {
+    const s = api && api.score;
+    if (!s) return 0;
+    if (s.masterBars && s.masterBars[0] && typeof s.masterBars[0].keySignature === 'number') {
+      return s.masterBars[0].keySignature;
+    }
+    return typeof s.keySignature === 'number' ? s.keySignature : 0;
+  } catch (e) { return 0; }
+}
+
+/**
+ * 把移调量直接写进 score 模型。
+ *
+ * 为什么不能只改 settings 就算完：settings 要等下一次渲染由 ScoreLoader 才会套到 staff 上，
+ * 而参考轨道必须此刻就重建 —— 直接写 staff 能让两者立刻一致。渲染时 alphaTab 会再写一遍同
+ * 样的值，这一步是幂等的。
+ *
+ * 符号（读 alphaTab 源码确认过，别靠猜）：
+ *   内部 realValue = fret + stringTuning − staff.transpositionPitch
+ *   settings 写入 staff.transpositionPitch = −transpositionPitches[i]
+ *   两处负号抵消 → **settings 里给正值就是升高**，UI 上也就按这个方向标注。
+ */
+function applyTranspositionToScore(score, semis) {
+  if (!score || !score.tracks) return;
+  for (const track of score.tracks) {
+    for (const staff of track.staves || []) {
+      try { staff.transpositionPitch = -semis; } catch (e) { /* 只读属性时忽略 */ }
+    }
+  }
+}
+
+/**
+ * 设置移调：显示、跟随判定基准、播放音高三处一起变。
+ * 中途改动会停下正在跑的跟随 —— 参考轨道换了，旧的高亮位置已经没有意义。
+ */
+function setTranspose(n) {
+  transpose = clampTranspose(n);
+  window.TPSettings.set('transpose', transpose);
+
+  try { api.settings.notation.transpositionPitches = [transpose]; } catch (e) { /* 无该设置 */ }
+  if (api && api.score) {
+    applyTranspositionToScore(api.score, transpose);
+    stopEngine();
+    clearHighlight();
+    // 参考轨道必须重建：OTW 跟随是靠 chroma 比对"谱上的音"和"耳朵听到的音"，
+    // 音符 realValue 变了而参考还是原调的话，跟随会一路判错。
+    buildReference(api.score);
+    try { api.render(); } catch (e) {
+      try { api.updateSettings(); } catch (e2) { /* 都不支持就不重渲染 */ }
+    }
+  }
+  updateTransposeUI();
+  setHint(transpose === 0
+    ? '已回到原调'
+    : ('已移调 ' + (transpose > 0 ? '+' : '') + transpose + ' 半音（' + intervalName(transpose) + '）'));
+}
+
+function intervalName(n) { return INTERVALS[Math.min(12, Math.abs(n))]; }
+
+/** 更新工具条数值与底部的「原调 X → Y」提示 */
+function updateTransposeUI() {
+  const el = $('trVal');
+  if (!el) return;
+  const n = transpose;
+  el.textContent = n === 0 ? '原调' : (n > 0 ? '+' + n : String(n));
+
+  const ks = scoreKey();
+  const from = keyPc(ks);
+  const to = ((from + n) % 12 + 12) % 12;
+  // 降号调（F / Bb / Eb …）读成降号名更自然，升号调反之
+  const origName = (ks < 0 ? PC_FLAT : PC_SHARP)[from];
+  const newName = (n >= 0 ? PC_SHARP : PC_FLAT)[to];
+  const kv = $('keyVal');
+  if (kv) {
+    kv.textContent = n === 0
+      ? ('原调 ' + origName)
+      : ((n > 0 ? '+' + n : n) + '（' + intervalName(n) + '）' + origName + '→' + newName);
+  }
+  $('btnTrReset').classList.toggle('active', n !== 0);
+}
+
 /* -------------------------------------------------------------------- UI */
 
 /** 绑定页面控件事件 */
@@ -811,6 +930,17 @@ function bindUI() {
     magOn = !magOn;
     window.TPSettings.set('magnifier', magOn);
   };
+
+  // 移调
+  $('btnTrUp').onclick = () => setTranspose(transpose + 1);
+  $('btnTrDown').onclick = () => setTranspose(transpose - 1);
+  $('btnTrReset').onclick = () => setTranspose(0);
+  // 键盘 [ / ] 快速升降半音（焦点在输入控件里时不抢按键）
+  document.addEventListener('keydown', (e) => {
+    if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    if (e.key === '[') setTranspose(transpose - 1);
+    else if (e.key === ']') setTranspose(transpose + 1);
+  });
 
   // 参数滑杆：统一写入设置，由设置模块分发回本页面与其他页面
   $('rate').oninput = (e) => window.TPSettings.set('rate', parseInt(e.target.value, 10));
@@ -845,6 +975,12 @@ function applySettings(s) {
       console.warn('缩放应用失败', err);
     }
   }
+
+  // 移调。initTab 构造 API 时已经把上次的值带进去了，
+  // 所以这里只有「用户在会话里改了设置」才会真正重渲染；否则只刷新显示。
+  const tr = clampTranspose(s.transpose);
+  if (tr !== transpose) setTranspose(tr);
+  else updateTransposeUI();
 
   // 放大镜
   magOn = !!s.magnifier;

@@ -205,16 +205,39 @@ async function importPdf(file, makeFirstCurrent) {
   return n;
 }
 
-$('fileInput').onchange = async (e) => {
-  const files = Array.from(e.target.files || []);
-  if (!files.length) return;
-  const isAppend = loadMode === 'append';
+/** 工程 / 打包文件（一次只开一个，它们代表整份还原，多选没有意义） */
+function isProjFile(f) {
+  return /\.(tabpilot|json)$/i.test(f.name || '');
+}
+
+/** 音频伴奏 */
+function isAudioFile(f) {
+  return /^audio\//i.test(f.type || '') || /\.(mp3|wav|m4a|aac|ogg|oga|flac)$/i.test(f.name || '');
+}
+
+function isImageFile(f) {
+  return /^image\//i.test(f.type || '') || /\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(f.name || '');
+}
+
+/**
+ * 统一的素材入口：文件选择器和拖放都走这里。
+ * 拖进来的东西什么都有 —— 谱图、PDF、伴奏、打包文件，所以要按类型分流。
+ * @param {File[]} files
+ * @param {'replace'|'append'} mode  replace 会先清空现有内容
+ */
+async function acceptFiles(files, mode) {
+  if (!files || !files.length) return;
+  const proj = files.filter(isProjFile);
+  const aud = files.filter(isAudioFile);
+  const pdfs = files.filter(isPdfFile);
+  const imgs = files.filter((f) => isImageFile(f) && !isPdfFile(f));
+
+  if (proj.length) { openProjFile(proj[0]); return; }
+
+  const isAppend = mode === 'append';
   if (!isAppend) { pages = []; curPage = 0; bands = []; stop(); }
 
-  const imgs = files.filter((f) => !isPdfFile(f));
-  const pdfs = files.filter(isPdfFile);
   const before = pages.length;
-
   imgs.forEach((f, idx) => {
     const r = new FileReader();
     // 替换模式：只把第一张设为当前显示页；追加模式：全部追加，不切换显示
@@ -224,7 +247,7 @@ $('fileInput').onchange = async (e) => {
     r.readAsDataURL(f);
   });
   if (isAppend && before) {
-    setHint('正在追加 ' + files.length + ' 页…追加完成后共 ' + (before + files.length) + ' 页');
+    setHint('正在追加 ' + imgs.length + ' 页…追加完成后共 ' + (before + imgs.length + pdfs.length) + ' 页');
   }
 
   // PDF 走异步逐页渲染，必须串行，否则页序会乱
@@ -236,8 +259,31 @@ $('fileInput').onchange = async (e) => {
       setHint('PDF 导入失败：' + pdfs[i].name + '（' + ((err && err.message) || err) + '）');
     }
   }
+
+  if (aud.length) loadAudioFile(aud[0]);
+}
+
+$('fileInput').onchange = (e) => {
+  acceptFiles(Array.from(e.target.files || []), loadMode);
   e.target.value = '';   // 允许重复选择同一个文件
 };
+
+/* 拖放：把谱图 / PDF / 伴奏 / 打包文件直接拖进舞台 */
+(function bindDrop() {
+  let depth = 0;
+  // 落在舞台之外也必须 preventDefault，否则浏览器会直接"打开"这个文件，页面被替换掉
+  const stop = (e) => { if (e.dataTransfer) e.preventDefault(); };
+  document.addEventListener('dragenter', (e) => { stop(e); depth++; stage.classList.add('dropOn'); });
+  document.addEventListener('dragover', stop);
+  document.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; stage.classList.remove('dropOn'); } });
+  document.addEventListener('drop', (e) => {
+    if (!e.dataTransfer) return;
+    e.preventDefault();
+    depth = 0;
+    stage.classList.remove('dropOn');
+    acceptFiles(Array.from(e.dataTransfer.files || []), 'replace');
+  });
+})();
 
 $('btnDemo').onclick = () => {
   pages = []; curPage = 0; bands = []; stop();
@@ -1397,11 +1443,186 @@ function importProjectFile(file) {
   r.readAsText(file);
 }
 
+/* --------------------------------------- .tabpilot 单文件打包（自定义容器） */
+
+const BUNDLE_MAGIC = 'TABPILOT/1';
+
+/**
+ * 打包成 .tabpilot 容器。
+ *
+ * 布局：<magic>\n<单行 JSON 头>\n<各段原始字节依次拼接>
+ * JSON.stringify 不会输出裸换行，所以「第二个换行」就是头的结束位置；
+ * 每段的长度写在头里，因此段与段之间不需要分隔符。
+ *
+ * 为什么不直接用 zip：仓库目前是零依赖（连 pdf.js 都是手动 vendor 进来的），
+ * 而这里只需要"把两段字节拼起来"，为此引入一个压缩库不值。
+ * 不压缩也不亏 —— 谱图本来就是 JPEG/PNG（已压缩），音频本身也是 mp3/ogg。
+ *
+ * 为什么不用 base64 内嵌 JSON：二进制原始存放比 base64 省 33% 体积，
+ * 而且不用一次性把整个文件转成字符串再 JSON.parse。
+ *
+ * @param {{key:string, data:string|Uint8Array|ArrayBuffer, meta?:object}[]} parts
+ */
+function packBundle(parts) {
+  const norm = parts.map((p) => {
+    let bytes;
+    if (typeof p.data === 'string') bytes = new TextEncoder().encode(p.data);
+    else if (p.data instanceof Uint8Array) bytes = p.data;
+    else bytes = new Uint8Array(p.data);
+    return { key: p.key, meta: p.meta || {}, bytes };
+  });
+  const head = {
+    app: 'TabPilot',
+    format: 'tabpilot',
+    version: 1,
+    parts: norm.map((p) => Object.assign({ key: p.key, len: p.bytes.length }, p.meta)),
+  };
+  return { headText: BUNDLE_MAGIC + '\n' + JSON.stringify(head) + '\n', head, parts: norm };
+}
+
+/** 把容器拼成一个完整的字节序列（导出下载 / 测试往返都用它） */
+function bundleBytes(packed) {
+  const head = new TextEncoder().encode(packed.headText);
+  const total = head.length + packed.parts.reduce((a, p) => a + p.bytes.length, 0);
+  const out = new Uint8Array(total);
+  out.set(head, 0);
+  let off = head.length;
+  packed.parts.forEach((p) => { out.set(p.bytes, off); off += p.bytes.length; });
+  return out;
+}
+
+/** 判断一段字节是不是我们的容器（不看扩展名，扩展名在不同系统上报得五花八门） */
+function isBundle(u8) {
+  const m = new TextEncoder().encode(BUNDLE_MAGIC);
+  if (u8.length < m.length) return false;
+  for (let i = 0; i < m.length; i++) if (u8[i] !== m[i]) return false;
+  return true;
+}
+
+/**
+ * 解包：按头里记录的长度切出各段。
+ * @returns {{head:object, parts:Object<string,{bytes:Uint8Array, meta:object}>}}
+ * @throws 不是容器 / 版本不符 / 段越界
+ */
+function unpackBundle(buf) {
+  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let nl1 = -1;
+  let nl2 = -1;
+  for (let i = 0; i < u8.length; i++) {
+    if (u8[i] !== 0x0a) continue;
+    if (nl1 < 0) nl1 = i; else { nl2 = i; break; }
+  }
+  if (nl2 < 0) throw new Error('不是 .tabpilot 打包文件');
+  const dec = new TextDecoder();
+  const magic = dec.decode(u8.subarray(0, nl1));
+  if (magic !== BUNDLE_MAGIC) throw new Error('不是 .tabpilot 打包文件');
+  const head = JSON.parse(dec.decode(u8.subarray(nl1 + 1, nl2)));
+  if (!head || head.app !== 'TabPilot' || head.format !== 'tabpilot') throw new Error('不是 TabPilot 打包文件');
+  if (head.version !== 1) throw new Error('不支持的容器版本：' + head.version + '（本版最多支持 v1）');
+  let off = nl2 + 1;
+  const parts = {};
+  for (const p of head.parts) {
+    if (!(p.len >= 0) || off + p.len > u8.length) throw new Error('打包文件已损坏（' + p.key + ' 段越界）');
+    parts[p.key] = { bytes: u8.subarray(off, off + p.len), meta: p };
+    off += p.len;
+  }
+  return { head, parts };
+}
+
+/** 导出 .tabpilot：谱图 + 谱行 + 段落标记 + 伴奏音频，一个文件全带走 */
+function exportBundle() {
+  if (!pages.length) { setHint('还没有可打包的内容：先加载谱图'); return; }
+  const parts = [{ key: 'project', data: JSON.stringify(buildProject()), meta: { type: 'application/json' } }];
+  let kb = 0;
+  if (audioRaw && audioRaw.bytes && audioRaw.bytes.byteLength) {
+    kb = audioRaw.bytes.byteLength / 1024;
+    parts.push({
+      key: 'audio',
+      data: new Uint8Array(audioRaw.bytes),
+      meta: { mime: audioRaw.mime, name: audioRaw.name, offset: audioOffset || 0 },
+    });
+  }
+  const packed = packBundle(parts);
+  const blob = new Blob([packed.headText].concat(packed.parts.map((p) => p.bytes)), { type: 'application/octet-stream' });
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  downloadBlob(blob, 'tabpilot-' + ts + '.tabpilot');
+  setHint(kb
+    ? ('已打包 .tabpilot（含伴奏 ' + Math.round(kb) + 'KB）：一个文件即可完整还原，便于分享/备份')
+    : '已打包 .tabpilot（未含伴奏 —— 先在底部导入音频会一起被打进去）');
+}
+
+/** 还原打包文件的字节内容 */
+function applyBundleBytes(u8) {
+  let res;
+  try { res = unpackBundle(u8); } catch (e) { setHint('打开打包文件失败：' + e.message); return; }
+  const pj = res.parts.project;
+  if (!pj) { setHint('打包文件里没有工程数据'); return; }
+  let proj = null;
+  try { proj = JSON.parse(new TextDecoder().decode(pj.bytes)); } catch (e) {
+    setHint('打包文件里的工程数据不是合法 JSON'); return;
+  }
+  if (!proj || !Array.isArray(proj.pages)) { setHint('打包文件里的工程数据不完整'); return; }
+  applyProject(proj);
+  const au = res.parts.audio;
+  if (au && au.bytes.length) loadAudioBytes(au.bytes, au.meta);
+  else setHint('打包文件已载入：' + proj.pages.length + ' 页（不含伴奏）');
+}
+
+/**
+ * 「打开工程」的统一入口：不靠扩展名区分格式，直接看字节。
+ * 是容器就解包，否则按 JSON 工程解析 —— 这样 .tabpilot 和旧的 .json 都能打开。
+ */
+function openProjFile(file) {
+  const r = new FileReader();
+  r.onload = () => {
+    const u8 = new Uint8Array(r.result);
+    if (isBundle(u8)) { applyBundleBytes(u8); return; }
+    try {
+      const proj = JSON.parse(new TextDecoder().decode(u8));
+      if (!proj || proj.app !== 'TabPilot' || !Array.isArray(proj.pages)) throw new Error('bad');
+      applyProject(proj);
+    } catch (e) {
+      setHint('打开失败：既不是 .tabpilot 打包文件，也不是 TabPilot 工程 JSON');
+    }
+  };
+  r.onerror = () => setHint('读取文件失败：' + file.name);
+  r.readAsArrayBuffer(file);
+}
+
+/** 下载二进制 Blob；宿主没有 createObjectURL 时回落到 data URI */
+function downloadBlob(blob, filename) {
+  try {
+    if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      return true;
+    }
+  } catch (e) { /* 落到下面的 data URI 兜底 */ }
+  const fr = new FileReader();
+  fr.onload = () => {
+    const a = document.createElement('a');
+    a.href = fr.result;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+  fr.readAsDataURL(blob);
+  return false;
+}
+
 $('btnSaveProj').onclick = exportProject;
+$('btnSaveBundle').onclick = exportBundle;
 $('btnOpenProj').onclick = () => $('projInput').click();
 $('projInput').onchange = (e) => {
   const f = e.target.files && e.target.files[0];
-  if (f) importProjectFile(f);
+  if (f) openProjFile(f);
   e.target.value = '';   // 允许重复选择同一个文件
 };
 
@@ -1610,7 +1831,8 @@ document.addEventListener('keydown', (e) => {
 
 /* ============================================================ 伴奏音频 + 自动测速 */
 
-let audioBuf = null;      // 解码后的音频（仅内存态，体积太大不进工程文件）
+let audioBuf = null;      // 解码后的音频（不进 .json 工程文件，只进 .tabpilot 打包）
+let audioRaw = null;      // 原始音频字节 { bytes: ArrayBuffer, mime, name }，打包成 .tabpilot 时用
 let audioPeaks = null;    // 波形峰值，每列一对 [min, max]
 let audioName = '';       // 文件名，只用于显示
 let audioSrc = null;      // 当前发声的 AudioBufferSourceNode
@@ -2008,32 +2230,22 @@ function loadAudioFile(file) {
   setHint('正在解码音频…');
   const r = new FileReader();
   r.onload = () => {
+    // decodeAudioData 会 detach 传入的 ArrayBuffer，所以先留一份原始字节的副本：
+    // 打包 .tabpilot 时要按原音频塞进去（mp3 比 PCM 小一个量级，不该把解码结果再编回去）
+    let raw = null;
+    try { raw = r.result.slice(0); } catch (e) { raw = null; }
     let done = false;
     const ok = (buf) => {
       if (done) return;
       done = true;
-      audioBuf = buf;
-      audioName = file.name;
-      bpmGuess = 0;
-      audioOffset = 0;                    // 换曲了，旧的偏移没有意义
-      $('audioOffset').value = 0;
-      audioMuted = false;
-      audioPeaks = computePeaks(buf, 900);
-      $('audioName').textContent = file.name;
-      $('audioBpm').textContent = '';
-      $('audioBar').classList.remove('collapsed');
-      ['btnAudioPlay', 'btnBpmDetect', 'btnAudioClose', 'offsetWrap', 'audioTip']
-        .forEach((id) => { $(id).style.display = ''; });
-      $('btnBpmUse').style.display = 'none';
-      drawWave();
-      updateAudioHead(0);
+      installAudioBuffer(buf, file.name, raw, file.type || guessAudioMime(file.name));
       setLed('ok', '伴奏已加载：' + file.name);
       setHint('点「🎯 自动测速」推算这首曲子的 BPM，或直接开始跟随（点波形可试听）');
     };
     const bad = () => { if (!done) { done = true; setHint('音频解码失败：格式可能不受支持'); } };
     // 非 Promise 的老实现也要兼容（Safari 早期）
     try {
-      const p = ctx2.decodeAudioData(r.result, ok, bad);
+      const p = ctx2.decodeAudioData(r.result.slice(0), ok, bad);
       if (p && p.then) p.then(ok, bad);
     } catch (e) { bad(); }
   };
@@ -2041,9 +2253,63 @@ function loadAudioFile(file) {
   r.readAsArrayBuffer(file);
 }
 
+/** 按扩展名猜 MIME：从文件选择器拿到的 type 有时是空的 */
+function guessAudioMime(name) {
+  const m = /\.(mp3|wav|m4a|aac|ogg|oga|flac)$/i.exec(name || '');
+  if (!m) return 'audio/mpeg';
+  const map = { mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', ogg: 'audio/ogg', oga: 'audio/ogg', flac: 'audio/flac' };
+  return map[m[1].toLowerCase()] || 'audio/mpeg';
+}
+
+/** 装配已解码的伴奏：记录元信息、算波形、更新 UI（文件导入与 .tabpilot 解包共用） */
+function installAudioBuffer(buf, name, raw, mime) {
+  audioBuf = buf;
+  audioRaw = raw && raw.byteLength ? { bytes: raw, mime: mime || guessAudioMime(name), name: name } : null;
+  audioName = name;
+  bpmGuess = 0;
+  audioOffset = 0;                    // 换曲了，旧的偏移没有意义
+  $('audioOffset').value = 0;
+  audioMuted = false;
+  audioPeaks = computePeaks(buf, 900);
+  $('audioName').textContent = name;
+  $('audioBpm').textContent = '';
+  $('audioBar').classList.remove('collapsed');
+  ['btnAudioPlay', 'btnBpmDetect', 'btnAudioClose', 'offsetWrap', 'audioTip']
+    .forEach((id) => { $(id).style.display = ''; });
+  $('btnBpmUse').style.display = 'none';
+  drawWave();
+  updateAudioHead(0);
+}
+
+/** 从原始音频字节直接装入伴奏（.tabpilot 解包用） */
+function loadAudioBytes(u8, meta) {
+  const ctx2 = ensureAC();
+  if (!ctx2) { setHint('打包文件里有伴奏，但当前环境不支持音频解码（Web Audio 不可用）'); return; }
+  // subarray 是视图，byteOffset 未必为 0；decodeAudioData 要求独立的 ArrayBuffer
+  const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+  const name = (meta && meta.name) || 'audio';
+  const mime = (meta && meta.mime) || guessAudioMime(name);
+  setHint('正在解码打包中的伴奏…');
+  const ok = (buf) => {
+    installAudioBuffer(buf, name, ab, mime);
+    if (meta && meta.offset) {
+      audioOffset = parseInt(meta.offset, 10) || 0;
+      $('audioOffset').value = audioOffset;
+    }
+    setLed('ok', '伴奏已恢复：' + name);
+    setHint('打包文件已还原（谱图 + 谱行 + 段落 + 伴奏），点「▶ 开始跟随」即可');
+  };
+  const bad = () => setHint('伴奏解码失败：打包文件里的音频格式可能不受支持');
+  try {
+    const p = ctx2.decodeAudioData(ab.slice(0), ok, bad);
+    if (p && p.then) p.then(ok, bad);
+  } catch (e) { bad(); }
+}
+
 function clearAudio() {
   stopAudio();
   audioBuf = null;
+  audioRaw = null;
   audioPeaks = null;
   bpmGuess = 0;
   audioOffset = 0;

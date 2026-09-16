@@ -16,7 +16,8 @@
     "ios:dev": "tauri ios dev",
   "export:web": "node scripts/export-web.mjs",
   "verify:bpm": "node scripts/verify-bpm.mjs",
-  "verify:image": "node scripts/verify-image-tab.mjs"
+  "verify:image": "node scripts/verify-image-tab.mjs",
+  "verify:bundle": "node scripts/verify-bundle.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

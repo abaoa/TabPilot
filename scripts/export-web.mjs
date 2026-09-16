@@ -38,8 +38,8 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.join(__dirname, '..');
 /** 源：本仓库的网页版前端目录 */
 const SRC = path.join(REPO_ROOT, 'public');
-/** 默认输出：兄弟目录中的个人站点 */
-const DEFAULT_OUT = path.join(REPO_ROOT, '..', 'abaoa-cn', 'public', 'tabpilot');
+/** 默认输出：个人站点仓库（与 tab-follower 同级的 code/abaoa-cn） */
+const DEFAULT_OUT = path.join(REPO_ROOT, '..', '..', 'abaoa-cn', 'public', 'tabpilot');
 
 /** 解析命令行参数（--key value 形式） */
 function parseArgs(argv) {

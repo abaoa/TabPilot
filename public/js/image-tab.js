@@ -2096,6 +2096,110 @@ function detectBpmBuffer(buf, maxSec) {
   return detectBpmSamples(ch, buf.sampleRate, maxSec);
 }
 
+/* ======================================================================
+ * 音频对齐核心（纯函数，可在 jsdom/node 单测，不碰 DOM）
+ *
+ * 两个用途：
+ *   1) 一键音画对齐（Feature 16）：把"伴奏真身"与"麦克风录到的房间回放"
+ *      做互相关，求出系统回路延迟（喇叭→麦克风），自动写入 audioOffset。
+ *   2) 麦克风实时跟奏（Feature 17）：把实时麦克风的包络小窗在伴奏包络上
+ *      滑窗找最佳重合位置，从而把播放头锁到演奏者实际所在的小节。
+ *
+ * 为了能在不同采样率（伴奏 44.1k / 麦克风 48k）下比较，先统一降采样到
+ * ALIGN_SR，再取 RMS 包络（对音色/房间染色比 onset 更稳），最后做互相关。
+ * ====================================================================== */
+
+const ALIGN_SR = 8000;        // 对齐用的统一降采样率（Hz）
+const ALIGN_FRAME = 0.023;    // 包络帧长（秒）→ 约 43fps
+
+/** 把信号降采样到 targetSr：每 targetSr/sr 个点取一次盒平均（抗混叠） */
+function decimateRate(samples, sr, targetSr) {
+  const ratio = sr / targetSr;
+  const n = Math.max(1, Math.floor(samples.length / ratio));
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor(i * ratio);
+    const b = Math.min(samples.length, Math.floor((i + 1) * ratio));
+    let s = 0;
+    for (let k = a; k < b; k++) s += samples[k];
+    out[i] = s / Math.max(1, b - a);
+  }
+  return out;
+}
+
+/** 计算 RMS 包络：把信号切成 frameSec 长的帧，返回每帧均方根 */
+function rmsEnvelope(samples, sr, frameSec) {
+  const n = Math.max(1, Math.floor(sr * frameSec));
+  const frames = Math.max(1, Math.floor(samples.length / n));
+  const out = new Float32Array(frames);
+  for (let f = 0; f < frames; f++) {
+    let s = 0;
+    const a = f * n, b = Math.min(samples.length, a + n);
+    for (let i = a; i < b; i++) { const v = samples[i]; s += v * v; }
+    out[f] = Math.sqrt(s / Math.max(1, b - a));
+  }
+  return out;
+}
+
+/**
+ * 对两段包络做互相关，返回使余弦相似度最高的整数帧偏移。
+ * @returns {{lag:number, score:number}} score∈[-1,1]，越高越像
+ */
+function bestLag(a, b, maxLag) {
+  let best = 0, bestScore = -Infinity;
+  for (let lag = -maxLag; lag <= maxLag; lag++) {
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < b.length; i++) {
+      const j = i + lag;
+      if (j < 0 || j >= a.length) continue;
+      const av = a[j], bv = b[i];
+      dot += av * bv; na += av * av; nb += bv * bv;
+    }
+    const denom = Math.sqrt(na * nb) || 1;
+    const sc = dot / denom;
+    if (sc > bestScore) { bestScore = sc; best = lag; }
+  }
+  return { lag: best, score: bestScore };
+}
+
+/**
+ * 计算两路音频之间的延迟（秒）。ref 是"真身"，query 是延迟/带噪的副本。
+ * 约定：query[i] ≈ ref[i + lag]，故 query 比 ref 延后时 lag 为负。
+ * @returns {{lagSec:number, lagFrames:number, score:number}}
+ */
+function alignOffsetSeconds(ref, query, refSr, querySr, maxLagSec) {
+  const r = decimateRate(ref, refSr, ALIGN_SR);
+  const q = decimateRate(query, querySr, ALIGN_SR);
+  const er = rmsEnvelope(r, ALIGN_SR, ALIGN_FRAME);
+  const eq = rmsEnvelope(q, ALIGN_SR, ALIGN_FRAME);
+  const maxLag = Math.max(1, Math.min(er.length - 1, eq.length - 1, Math.round(maxLagSec / ALIGN_FRAME)));
+  const { lag, score } = bestLag(er, eq, maxLag);
+  return { lagFrames: lag, lagSec: lag * ALIGN_FRAME, score };
+}
+
+/**
+ * 在参考包络 ref 上，从 aroundIdx 附近 ±win 帧内找 query 小窗的最佳起点。
+ * 用于实时跟奏：query 是最近一小段实时包络。
+ * @returns {{pos:number, score:number}} pos 是 ref 中的帧索引
+ */
+function findPosition(ref, query, aroundIdx, win) {
+  let best = aroundIdx, bestScore = -Infinity;
+  const lo = Math.max(0, aroundIdx - win);
+  const hi = Math.min(ref.length - query.length, aroundIdx + win);
+  if (hi < lo) return { pos: aroundIdx, score: 0 };
+  for (let p = lo; p <= hi; p++) {
+    let dot = 0, nr = 0, nq = 0;
+    for (let i = 0; i < query.length; i++) {
+      const rv = ref[p + i], qv = query[i];
+      dot += rv * qv; nr += rv * rv; nq += qv * qv;
+    }
+    const denom = Math.sqrt(nr * nq) || 1;
+    const sc = dot / denom;
+    if (sc > bestScore) { bestScore = sc; best = p; }
+  }
+  return { pos: best, score: bestScore };
+}
+
 /* ---- 波形 ---- */
 
 /** 提取每列的 min/max 峰值。cols 取画布像素密度即可，多了只是浪费 */
@@ -2220,6 +2324,148 @@ function syncAudioRate() {
   if (audioSrc && audioSrc.playbackRate) {
     try { audioSrc.playbackRate.value = rate; } catch (e) {}
   }
+}
+
+/* ======================================================================
+ * 麦克风对齐（Feature 16 / 17）
+ * ====================================================================== */
+const FOLLOW_TICK_MS = 100;   // 跟奏采样周期（ms）
+
+let aligning = false;         // 校准进行中
+let followOn = false;         // 跟奏开关
+let followStream = null;      // 麦克风 MediaStream
+let followAnalyser = null;    // AnalyserNode
+let followTimer = null;       // 轮询定时器
+let liveEnv = [];             // 实时包络（每 tick 一个 RMS，约 100ms/点）
+let followRef = null;         // 伴奏粗化包络（与 liveEnv 同分辨率）
+
+/** 把伴奏降采样+包络，再粗化到 FOLLOW_TICK_MS 分辨率，作为跟奏的参考 */
+function buildFollowRef() {
+  if (!audioBuf) return null;
+  const ch = audioBuf.getChannelData(0);
+  const d = decimateRate(ch, audioBuf.sampleRate, ALIGN_SR);
+  const fine = rmsEnvelope(d, ALIGN_SR, ALIGN_FRAME);
+  const per = Math.max(1, Math.round((FOLLOW_TICK_MS / 1000) / ALIGN_FRAME));
+  const coarse = [];
+  for (let i = 0; i < fine.length; i += per) {
+    let s = 0, c = 0;
+    for (let k = i; k < Math.min(fine.length, i + per); k++) { s += fine[k]; c++; }
+    coarse.push(s / Math.max(1, c));
+  }
+  return coarse;
+}
+
+function micSupported() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+/** Feature 16：一键音画对齐。播放伴奏并用麦克风录几秒，求回路延迟写入 audioOffset */
+async function calibrateOffset() {
+  if (!audioBuf) { setHint('请先导入伴奏再校准音画偏移'); return; }
+  if (aligning) return;
+  if (!micSupported()) { setHint('当前环境不支持麦克风（请用桌面版 TabPilot 或 https 访问网页版）'); return; }
+  if (typeof MediaRecorder === 'undefined') { setHint('当前环境不支持录音（MediaRecorder）'); return; }
+  aligning = true;
+  setHint('校准中：请让伴奏通过扬声器播放，我会用麦克风录几秒…（建议暂时关掉节拍器）');
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false } });
+    const wasMuted = audioMuted;
+    audioMuted = false;
+    startAudioAt(0);                       // 从曲首播放，便于麦克风录到完整开头
+    const rec = new MediaRecorder(stream);
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise((res) => { rec.onstop = res; });
+    rec.start();
+    await new Promise((r) => setTimeout(r, 4000));
+    rec.stop();
+    await stopped;
+    stream.getTracks().forEach((t) => t.stop());
+    stopAudio();
+    if (wasMuted) audioMuted = true;
+
+    const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+    const acx = ensureAC();
+    if (!acx) { setHint('音频上下文不可用，无法解码录音'); return; }
+    const qbuf = await acx.decodeAudioData(await blob.arrayBuffer());
+    const query = qbuf.getChannelData(0);
+    const ref = audioBuf.getChannelData(0);
+    const res = alignOffsetSeconds(ref, query, audioBuf.sampleRate, qbuf.sampleRate, 3);
+    if (res.score < 0.3) {
+      setHint('没对齐上：录音里没听清伴奏，请调大扬声器音量、靠近麦克风后重试');
+      return;
+    }
+    // query[i]≈ref[i-lag] → lag 为负；回路延迟 L = -lag·帧长，audioOffset 取正
+    audioOffset = Math.round(-res.lagFrames * ALIGN_FRAME * 1000);
+    if ($('audioOffset')) $('audioOffset').value = audioOffset;
+    setLed('ok', '音画对齐完成');
+    setHint('已自动校准音画偏移：' + audioOffset + 'ms（系统回路延迟）。若仍差半拍可手动微调');
+  } catch (e) {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    setHint('校准失败：' + (e && e.message ? e.message : e) + '（麦克风被拒绝或无音频权限）');
+  } finally {
+    aligning = false;
+  }
+}
+
+/** Feature 17：开启麦克风实时跟奏 */
+async function startFollow() {
+  if (!audioBuf) { setHint('请先导入伴奏再开启跟奏'); return; }
+  if (followOn) return;
+  if (!micSupported()) { setHint('当前环境不支持麦克风'); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (e) { setHint('跟奏开启失败：' + (e && e.message ? e.message : e)); return; }
+  const acx = ensureAC();
+  if (!acx) { stream.getTracks().forEach((t) => t.stop()); setHint('音频上下文不可用，无法开启跟奏'); return; }
+  const srcNode = acx.createMediaStreamSource(stream);
+  const an = acx.createAnalyser();
+  an.fftSize = 2048;
+  srcNode.connect(an);
+  followStream = stream;
+  followAnalyser = an;
+  followRef = buildFollowRef();
+  liveEnv = [];
+  followOn = true;
+  if ($('btnFollow')) $('btnFollow').classList.add('active');
+  setHint('跟奏已开启：播放头会跟随你实际弹/听的位置自动移动（再点一次可关闭）');
+  followTick();
+}
+
+function followTick() {
+  if (!followOn || !followAnalyser) return;
+  const buf = new Float32Array(followAnalyser.fftSize);
+  followAnalyser.getFloatTimeDomainData(buf);
+  let s = 0; for (let i = 0; i < buf.length; i++) { const v = buf[i]; s += v * v; }
+  liveEnv.push(Math.sqrt(s / buf.length));
+  if (liveEnv.length > 400) liveEnv.shift();                 // 上限 ~40s
+
+  const W = Math.round(1.5 / (FOLLOW_TICK_MS / 1000));       // 实时窗长（粗帧）
+  if (followRef && liveEnv.length >= W) {
+    const win = liveEnv.slice(-W);
+    const around = Math.round(curTime() / 1000 / (FOLLOW_TICK_MS / 1000));
+    const winFrames = Math.round(2 / (FOLLOW_TICK_MS / 1000));
+    const { pos, score } = findPosition(followRef, win, around, winFrames);
+    if (score > 0.4) {
+      const newMs = pos * FOLLOW_TICK_MS;
+      if (Math.abs(newMs - curTime()) > 250) {
+        if (playing || paused) startAtTime(newMs);
+        else elapsedBase = newMs;
+      }
+    }
+  }
+  followTimer = setTimeout(followTick, FOLLOW_TICK_MS);
+}
+
+function stopFollow() {
+  followOn = false;
+  if (followTimer) { clearTimeout(followTimer); followTimer = null; }
+  if (followStream) { followStream.getTracks().forEach((t) => t.stop()); followStream = null; }
+  followAnalyser = null; liveEnv = []; followRef = null;
+  if ($('btnFollow')) $('btnFollow').classList.remove('active');
+  setHint('跟奏已关闭');
 }
 
 /* ---- 文件导入 ---- */
@@ -2414,6 +2660,10 @@ $('audioOffset').onchange = (e) => {
   updateAudioHead(curTime());
   if (audioBuf && audioPlaying) startAudioAt(curTime());
 };
+
+// 麦克风对齐：校准音画偏移 / 实时跟奏（无该按钮或不支持时静默跳过）
+if ($('btnAlign')) $('btnAlign').onclick = calibrateOffset;
+if ($('btnFollow')) $('btnFollow').onclick = () => { if (followOn) stopFollow(); else startFollow(); };
 
 window.addEventListener('resize', () => {
   if (audioPeaks) drawWave();

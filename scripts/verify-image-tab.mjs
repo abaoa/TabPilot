@@ -490,6 +490,14 @@ window.addEventListener('load', function () {
                 document.getElementById('audioOffset').value === '375', 'off=' + audioOffset);
               audioOffset = 0;
 
+              // ===== 新增：麦克风对齐（Feature 16/17）=====
+              ok('对齐：calibrateOffset / startFollow 已接线',
+                typeof calibrateOffset === 'function' && typeof startFollow === 'function');
+              ok('对齐：核心 alignOffsetSeconds / findPosition 可用',
+                typeof alignOffsetSeconds === 'function' && typeof findPosition === 'function');
+              ok('对齐：按钮 btnAlign / btnFollow 存在于页面',
+                !!document.getElementById('btnAlign') && !!document.getElementById('btnFollow'));
+
               document.getElementById('btnClear').click();
               ok('清空后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');
               ok('清空后滚动视图无残留页', document.querySelectorAll('#scrollView .scrollPage').length === 0);

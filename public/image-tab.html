@@ -146,7 +146,8 @@
       <span class="glabel">参数</span>
       <span class="lbl">BPM <input id="bpm" type="number" value="72" min="30" max="240" aria-label="速度 BPM"></span>
       <span class="lbl">拍/小节 <input id="bpb" type="number" value="4" min="1" max="12" aria-label="每小节拍数"></span>
-      <span class="slider">速度<input id="rate" type="range" min="50" max="200" step="5" value="100" aria-label="播放速度"><b id="rateVal">1.0x</b></span>
+      <span class="lbl">起始小节 <input id="startMeasure" type="number" value="1" min="1" max="999" aria-label="起始小节号"></span>
+      <span class="slider">速度<input id="rate" type="range" min="50" max="150" step="5" value="100" aria-label="播放速度"><b id="rateVal">1.0x</b></span>
     </div>
 
     <span class="app-ver">v1.0.0</span>
@@ -175,6 +176,13 @@
       <button class="btn" id="btnStop">⏹</button>
     </div>
 
+    <div class="group">
+      <span class="glabel">练习</span>
+      <button class="btn" id="btnLoop" title="开启后播到 B 会自动回到 A 反复练">🔁 循环</button>
+      <button class="btn sm" id="btnLoopA" title="把当前位置设为循环起点 A">ⓐ</button>
+      <button class="btn sm" id="btnLoopB" title="把当前位置设为循环终点 B">ⓑ</button>
+    </div>
+
     <div class="menu">
       <button class="btn" id="btnMore" aria-haspopup="true" aria-expanded="false">⋯ 更多</button>
       <div class="menu-pop" id="morePop" role="menu">
@@ -197,6 +205,7 @@
       <img id="tabImg" alt="谱图">
       <div id="barBox"></div>
       <div id="scanline"></div>
+      <div id="measureLabel" style="display:none"></div>
     </div>
     <div class="filmstrip" id="filmstrip" aria-label="多页缩略图"></div>
   </div>
@@ -227,6 +236,7 @@
   <div class="chip"><span class="led" id="led"></span><span id="modeText">待机</span></div>
   <div class="chip">当前行 <b id="bandNum">-</b></div>
   <div class="chip">当前小节 <b id="barNum">-</b></div>
+  <div class="chip" id="loopChip" style="display:none">循环 <b id="loopRange">-</b></div>
   <div class="chip">行进时间 <b id="elapsed">0.0s</b></div>
   <div class="hint" id="hint">加载谱图 → 识别谱行 → 开始跟随</div>
 </footer>

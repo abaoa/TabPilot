@@ -378,6 +378,45 @@ input[type='range'] {
   opacity: .85;
 }
 
+/* 谱行起始小节标注（行左侧的小药丸） */
+.measureTag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translateY(-100%);
+  margin-top: -2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(47, 111, 237, .92);
+  padding: 1px 5px;
+  border-radius: 6px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  z-index: 4;
+}
+.measureTag.cur {
+  background: rgba(225, 29, 72, .95);
+  transform: translateY(-100%) scale(1.12);
+}
+
+/* 跟随中当前小节的浮动编号（落在红色高亮框上方居中） */
+#measureLabel {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  font-size: 12px;
+  font-weight: 800;
+  color: #fff;
+  background: rgba(225, 29, 72, .95);
+  padding: 1px 7px;
+  border-radius: 7px;
+  pointer-events: none;
+  z-index: 6;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .25);
+}
+
 /* 谱行列表项 */
 .bandItem {
   display: flex;
@@ -406,6 +445,17 @@ input[type='range'] {
 .bandItem b {
   flex: 1;
   font-weight: 600;
+}
+
+.bandItem .mlbl {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--brand);
+  background: var(--brand-soft);
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .bandItem input[type='number'] {

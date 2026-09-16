@@ -29,11 +29,12 @@ window.TPSettings = (function () {
   /** 默认设置；新增设置项时只需在此登记，抽屉与存储逻辑自动生效 */
   var DEFAULTS = {
     theme: 'auto',      // 主题模式：auto | light | dark
-    rate: 100,          // 默认跟随速度百分比（50–200）
+    rate: 100,          // 默认跟随速度百分比（50–150 = 0.5×–1.5×）
     gate: -72,          // 麦克风噪声门（dB，-90 – -40）
     zoom: 100,          // 谱面缩放百分比（60–160）
     magnifier: false,   // 是否默认开启放大镜
     showHints: true,    // 是否显示底部操作提示
+    startMeasure: 1,    // 图片谱：全局起始小节号（影响谱行旁的小节标注）
   };
 
   var state = load();
@@ -237,7 +238,7 @@ window.TPSettings = (function () {
     var secFollow = el('div', 'settings-section');
     var h4b = el('h4', null, '跟随');
     secFollow.appendChild(h4b);
-    secFollow.appendChild(field('默认速度', 'BPM 滚动与播放的初始倍速', rangeCtl('rate', 50, 200, 5, function (v) { return (v / 100).toFixed(1) + 'x'; })));
+    secFollow.appendChild(field('默认速度', 'BPM 滚动与播放的初始倍速（0.5×–1.5×）', rangeCtl('rate', 50, 150, 5, function (v) { return (v / 100).toFixed(1) + 'x'; })));
     secFollow.appendChild(field('麦克风噪声门', '环境嘈杂时调低（更严格），听不清时调高', rangeCtl('gate', -90, -40, 1, function (v) { return v + 'dB'; })));
     body.appendChild(secFollow);
 

@@ -66,6 +66,10 @@ let magOn = true;
 let metro = false;
 let ac = null;
 let lastBeat = -1;
+/** 练习：A/B 区间循环 */
+let loopOn = false;
+let loopA = null;   // 循环起点（音乐时间 ms）
+let loopB = null;   // 循环终点（音乐时间 ms）
 
 /* ---------------------------------------------------------------- 工具函数 */
 
@@ -442,12 +446,17 @@ function renderBandList() {
     return;
   }
 
-  el.innerHTML = bands.map((b, i) =>
-    '<div class="bandItem" data-i="' + i + '">' +
-    '<b>行 ' + (i + 1) + '</b>' +
-    '<span class="lbl">小节</span><input type="number" min="1" max="16" value="' + b.bars + '" data-bars="' + i + '" aria-label="第 ' + (i + 1) + ' 行小节数">' +
-    '<button class="del" data-del="' + i + '" title="删除该行" aria-label="删除第 ' + (i + 1) + ' 行">✕</button>' +
-    '</div>').join('');
+  el.innerHTML = bands.map((b, i) => {
+    const m0 = measureStartAt(curPage, i) + 1;
+    const m1 = m0 + b.bars - 1;
+    const mtxt = b.bars > 1 ? ('m' + m0 + '–' + m1) : ('m' + m0);
+    return '<div class="bandItem" data-i="' + i + '">' +
+      '<b>行 ' + (i + 1) + '</b>' +
+      '<span class="mlbl">' + mtxt + '</span>' +
+      '<span class="lbl">小节</span><input type="number" min="1" max="16" value="' + b.bars + '" data-bars="' + i + '" aria-label="第 ' + (i + 1) + ' 行小节数">' +
+      '<button class="del" data-del="' + i + '" title="删除该行" aria-label="删除第 ' + (i + 1) + ' 行">✕</button>' +
+      '</div>';
+  }).join('');
 
   el.querySelectorAll('[data-bars]').forEach((inp) => {
     inp.onchange = () => {
@@ -474,7 +483,9 @@ function renderBandList() {
 /** 在图上绘制谱行覆盖层（半透明框，便于核对识别结果） */
 function drawBands() {
   imgWrap.querySelectorAll('.band').forEach((n) => n.remove());
-  for (const b of bands) {
+  imgWrap.querySelectorAll('.measureTag').forEach((n) => n.remove());
+  for (let i = 0; i < bands.length; i++) {
+    const b = bands[i];
     const d = document.createElement('div');
     d.className = 'band';
     d.style.top = b.y0 + 'px';
@@ -482,6 +493,16 @@ function drawBands() {
     d.style.width = (b.x1 - b.x0) + 'px';
     d.style.height = (b.y1 - b.y0) + 'px';
     imgWrap.appendChild(d);
+
+    // 行左侧的小节标注药丸：显示该行的起始/结束小节号（全局编号）
+    const m0 = measureStartAt(curPage, i) + 1;
+    const m1 = m0 + b.bars - 1;
+    const tag = document.createElement('div');
+    tag.className = 'measureTag';
+    tag.style.left = b.x0 + 'px';
+    tag.style.top = b.y0 + 'px';
+    tag.textContent = b.bars > 1 ? ('m' + m0 + '–' + m1) : ('m' + m0);
+    imgWrap.appendChild(tag);
   }
 }
 
@@ -548,6 +569,22 @@ function durBeforePage(pi) {
 }
 
 /**
+ * 第 pi 页第 bi 行「起始小节」的 0 基索引（全曲累加）。
+ * 起始小节号来自设置 startMeasure（默认 1），其后按每行 bars 累加；
+ * 多页时第 2 页的起点 = 第 1 页全部小节之后，自动续接。
+ */
+function measureStartAt(pi, bi) {
+  let acc = (window.TPSettings.get('startMeasure') || 1) - 1;
+  for (let p = 0; p < pi; p++) {
+    const bs = pages[p].bands;
+    for (let k = 0; k < bs.length; k++) acc += bs[k].bars;
+  }
+  const bs = pages[pi].bands;
+  for (let k = 0; k < bi; k++) acc += bs[k].bars;
+  return acc;
+}
+
+/**
  * 音乐时间(ms) → 位置信息（跨页）
  * @returns {{page:number, band:number, bar:number, p:number, g:number}|null}
  *   page 页索引、band 页内行索引、bar 行内小节索引、p 行内进度(0–1)、g 全曲进度(0–1)
@@ -582,6 +619,11 @@ function locate(t) {
 /** 当前音乐时间（ms）：暂停前的累计 + 本次恢复后按倍速推进的时间 */
 function musicNow() {
   return elapsedBase + (performance.now() - t0) * rate;
+}
+
+/** 当前音乐时间（暂停或未播时取累计位置），供「设 A/B」取点 */
+function curTime() {
+  return (playing && !paused) ? musicNow() : elapsedBase;
 }
 
 /* -------------------------------------------------------------------- 播放 */
@@ -665,6 +707,7 @@ function stop(reset = true) {
   curBand = curBar = -1;
   barBox.style.display = 'none';
   scanline.style.display = 'none';
+  $('measureLabel').style.display = 'none';
   $('btnPlay').textContent = '▶ 开始跟随';
   if (reset) {
     elapsedBase = 0;
@@ -677,6 +720,34 @@ $('btnPause').onclick = pause;
 $('btnStop').onclick = () => stop();
 $('btnPrevPage').onclick = () => gotoPage(curPage - 1);
 $('btnNextPage').onclick = () => gotoPage(curPage + 1);
+
+/* 练习：A/B 区间循环 —— 把某段反复练，到 B 自动回 A */
+$('btnLoop').onclick = () => {
+  loopOn = !loopOn;
+  $('btnLoop').classList.toggle('active', loopOn);
+  updateLoopUI();
+  if (loopOn) setHint('循环已开：播到 B 会无缝回到 A 反复练。还没设 A/B 就先点 ⓐ/ⓑ 取当前位置。');
+  else setHint('循环已关');
+};
+$('btnLoopA').onclick = () => {
+  loopA = curTime();
+  updateLoopUI();
+  setHint('循环起点 A = ' + (loopA / 1000).toFixed(1) + 's（当前位置）');
+};
+$('btnLoopB').onclick = () => {
+  loopB = curTime();
+  updateLoopUI();
+  setHint('循环终点 B = ' + (loopB / 1000).toFixed(1) + 's（当前位置）');
+};
+
+/** 同步循环 UI：区间芯片显隐、范围文字、按钮高亮 */
+function updateLoopUI() {
+  const chip = $('loopChip');
+  chip.style.display = (loopA != null || loopB != null) ? '' : 'none';
+  $('loopRange').textContent = (loopA != null ? (loopA / 1000).toFixed(1) + 's' : '?') +
+    ' → ' + (loopB != null ? (loopB / 1000).toFixed(1) + 's' : '?');
+  $('btnLoop').classList.toggle('active', loopOn);
+}
 
 // 「更多」菜单：收纳低频操作（示例谱/节拍器/放大镜/行列表），降低工具栏密度
 const morePop = $('morePop');
@@ -706,6 +777,11 @@ $('rate').oninput = (e) => {
   window.TPSettings.set('rate', parseInt(e.target.value, 10));
 };
 
+/** 起始小节号：写入设置；变更后重绘谱行标注 */
+$('startMeasure').onchange = (e) => {
+  window.TPSettings.set('startMeasure', Math.max(1, parseInt(e.target.value, 10) || 1));
+};
+
 /** BPM / 拍号变化会改变时间轴，重绘覆盖层即可 */
 $('bpm').onchange = drawBands;
 $('bpb').onchange = drawBands;
@@ -727,11 +803,17 @@ tabImg.addEventListener('dblclick', () => {
 /** 定时器回调：计算当前位置并刷新界面 */
 function tick() {
   if (!playing || paused) return;
-  const t = musicNow();
+  let t = musicNow();
   if (t >= totalDur()) {
     stop();
     setLed('ok', '已播完');
     return;
+  }
+  // A/B 循环：越过终点后无缝回到起点反复练
+  if (loopOn && loopA != null && loopB != null && loopB > loopA && t >= loopB) {
+    elapsedBase = loopA;
+    t0 = performance.now();
+    t = loopA;
   }
   const loc = locate(t);
   if (!loc) return;
@@ -765,6 +847,14 @@ function showPosition(bandIdx, barIdx, p = 0) {
   barBox.style.width = w + 'px';
   barBox.style.height = (b.y1 - b.y0) + 'px';
 
+  // 当前小节的全局编号（跟「谱行旁标注」同一套计数）
+  const mNum = measureStartAt(curPage, bandIdx) + barIdx + 1;
+  const ml = $('measureLabel');
+  ml.style.display = 'block';
+  ml.style.left = (x + w / 2) + 'px';
+  ml.style.top = b.y0 + 'px';
+  ml.textContent = '♪ 第 ' + mNum + ' 小节';
+
   // 行内进度扫描线
   scanline.style.display = 'block';
   scanline.style.top = (b.y1 - 2) + 'px';
@@ -780,9 +870,10 @@ function showPosition(bandIdx, barIdx, p = 0) {
 
   $('bandNum').textContent = (bandIdx + 1) + ' / ' + bands.length;
   $('pageNum').textContent = (curPage + 1) + ' / ' + pages.length;
-  $('barNum').textContent = (barIdx + 1) + ' / ' + b.bars;
+  $('barNum').textContent = mNum;
 
   document.querySelectorAll('.bandItem').forEach((it, i) => it.classList.toggle('cur', i === bandIdx));
+  imgWrap.querySelectorAll('.measureTag').forEach((tg, i) => tg.classList.toggle('cur', i === bandIdx));
   const ft = document.querySelectorAll('#filmstrip .thumb');
   ft.forEach((it, i) => it.classList.toggle('cur', i === curPage));
 
@@ -841,6 +932,11 @@ function applySettings(s) {
   rate = s.rate / 100;
   $('rate').value = s.rate;
   $('rateVal').textContent = rate.toFixed(1) + 'x';
+
+  const sm = s.startMeasure || 1;
+  const smInput = $('startMeasure');
+  if (smInput) smInput.value = sm;
+  drawBands();   // 起始小节号变更 → 重绘谱行标注
 
   magOn = !!s.magnifier;
   $('btnMag').classList.toggle('active', magOn);

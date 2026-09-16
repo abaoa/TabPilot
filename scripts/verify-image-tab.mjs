@@ -116,14 +116,40 @@ window.addEventListener('load', function () {
       var bar = document.getElementById('barBox');
       ok('播到页末自动翻到第 2 页', curPage === 1, 'curPage=' + curPage + ', playing=' + playing);
       ok('小节高亮框已显示', bar.style.display === 'block', 'inline=' + bar.style.display + ' band=' + curBand + ' bars=' + bands.length);
-      stop();
-      document.getElementById('btnClear').click();
-      ok('「清空」后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');
 
-      var pre = document.createElement('pre');
-      pre.id = 'VERIFY';
-      pre.textContent = R.join('\\n');
-      document.body.appendChild(pre);
+      // ===== 新增：A/B 区间循环 =====
+      loopOn = true; loopA = 0; loopB = 200; startAtTime(0);   // 只循环前 200ms
+      win.setTimeout(function () {
+        ok('循环：越过 B 后无缝回到 A（curTime ≤ loopB）', curTime() <= 201, 'curTime=' + curTime().toFixed(0));
+        ok('循环：起点 A 已记录为 0', loopA === 0, 'A=' + loopA);
+        ok('循环：终点 B 已记录', loopB === 200, 'B=' + loopB);
+        ok('循环：开关已置 on', loopOn === true);
+        stop();
+
+        // ===== 新增：小节号标注 =====
+        window.TPSettings.set('startMeasure', 5);
+        gotoPage(0);
+        drawBands();
+        var tag0 = document.getElementById('imgWrap').querySelector('.measureTag');
+        ok('小节标注：起始小节=5 时第 1 行标 m5', !!tag0 && /m5/.test(tag0.textContent), tag0 && tag0.textContent);
+        ok('measureStartAt 含起始偏移 (0,0)=4', measureStartAt(0, 0) === 4, 'got=' + measureStartAt(0, 0));
+
+        window.TPSettings.set('startMeasure', 1);
+        gotoPage(0);
+        drawBands();
+        ok('measureStartAt(0,1)=4（前一行 4 小节累加）', measureStartAt(0, 1) === 4, 'got=' + measureStartAt(0, 1));
+        ok('measureStartAt(0,2)=8（两行共 8 小节）', measureStartAt(0, 2) === 8, 'got=' + measureStartAt(0, 2));
+        renderBandList();
+        ok('行列表含小节区间文字 m1', /m1/.test(document.getElementById('bandList').innerHTML));
+
+        document.getElementById('btnClear').click();
+        ok('「清空」后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');
+
+        var pre = document.createElement('pre');
+        pre.id = 'VERIFY';
+        pre.textContent = R.join('\\n');
+        document.body.appendChild(pre);
+      }, 350);
     }, 900);
   });
 });

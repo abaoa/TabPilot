@@ -146,13 +146,73 @@ function clickTick(accent) {
 $('btnLoad').onclick = () => { loadMode = 'replace'; $('fileInput').click(); };
 $('btnAdd').onclick = () => { loadMode = 'append'; $('fileInput').click(); };
 
-$('fileInput').onchange = (e) => {
+/** 是不是 PDF（扩展名或 MIME 任一命中即可，某些系统给不出 MIME） */
+function isPdfFile(f) {
+  return /\.pdf$/i.test(f.name || '') || f.type === 'application/pdf';
+}
+
+/** 懒加载 pdf.js：只有真正导入 PDF 时才拉取这 1.3MB 的库 */
+let pdfLibPromise = null;
+function loadPdfLib() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (pdfLibPromise) return pdfLibPromise;
+  pdfLibPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'vendor/pdf.min.js';
+    s.onload = () => {
+      if (!window.pdfjsLib) { reject(new Error('pdf.js 未正确加载')); return; }
+      try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js'; } catch (e) { /* 无 Worker 时 pdf.js 会退回主线程 */ }
+      resolve(window.pdfjsLib);
+    };
+    s.onerror = () => { pdfLibPromise = null; reject(new Error('无法加载 PDF 解析库')); };
+    document.head.appendChild(s);
+  });
+  return pdfLibPromise;
+}
+
+/**
+ * 导入 PDF：每一页渲染成一张谱图（≈1600px 宽），按顺序追加成多页。
+ * 渲染分辨率取「够看清六线谱」与「别把内存吃光」的折中。
+ */
+async function importPdf(file, makeFirstCurrent) {
+  setLed('', '正在解析 PDF：' + file.name);
+  const lib = await loadPdfLib();
+  const buf = await file.arrayBuffer();
+  const doc = await lib.getDocument({ data: buf }).promise;
+  const n = doc.numPages;
+
+  for (let i = 1; i <= n; i++) {
+    const page = await doc.getPage(i);
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.max(1, Math.min(2, 1600 / base.width));
+    const vp = page.getViewport({ scale });
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.floor(vp.width));
+    cv.height = Math.max(1, Math.floor(vp.height));
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    setHint('正在渲染 PDF：第 ' + i + ' / ' + n + ' 页');
+    loadImageData(cv.toDataURL('image/jpeg', 0.92), !!makeFirstCurrent && i === 1, file.name + ' 第' + i + '页');
+    try { page.cleanup(); } catch (e) { /* 旧版本没有 cleanup */ }
+  }
+  setLed('ok', 'PDF 已导入（' + n + ' 页）');
+  setHint('PDF 导入完成，共 ' + n + ' 页。点「🤖 自动识别谱行」逐页识别（识别只作用于当前页）。');
+  return n;
+}
+
+$('fileInput').onchange = async (e) => {
   const files = Array.from(e.target.files || []);
   if (!files.length) return;
-  if (loadMode === 'replace') { pages = []; curPage = 0; bands = []; stop(); }
   const isAppend = loadMode === 'append';
+  if (!isAppend) { pages = []; curPage = 0; bands = []; stop(); }
+
+  const imgs = files.filter((f) => !isPdfFile(f));
+  const pdfs = files.filter(isPdfFile);
   const before = pages.length;
-  files.forEach((f, idx) => {
+
+  imgs.forEach((f, idx) => {
     const r = new FileReader();
     // 替换模式：只把第一张设为当前显示页；追加模式：全部追加，不切换显示
     const makeCurrent = !isAppend && idx === 0;
@@ -162,6 +222,16 @@ $('fileInput').onchange = (e) => {
   });
   if (isAppend && before) {
     setHint('正在追加 ' + files.length + ' 页…追加完成后共 ' + (before + files.length) + ' 页');
+  }
+
+  // PDF 走异步逐页渲染，必须串行，否则页序会乱
+  const pdfFirst = !isAppend && imgs.length === 0;
+  for (let i = 0; i < pdfs.length; i++) {
+    try {
+      await importPdf(pdfs[i], pdfFirst && i === 0);
+    } catch (err) {
+      setHint('PDF 导入失败：' + pdfs[i].name + '（' + ((err && err.message) || err) + '）');
+    }
   }
   e.target.value = '';   // 允许重复选择同一个文件
 };
@@ -186,6 +256,7 @@ function loadImageData(src, current, name, preset) {
   const pg = {
     img: new Image(),
     src,
+    orig: src,          // 载入时的原始图，供「修图 → 还原原图」回退
     w: 0,
     h: 0,
     bands: Array.isArray(preset) ? preset.map((b) => ({
@@ -1456,8 +1527,277 @@ $('pmClear').onclick = () => {
   setHint('练习记录已清空');
 };
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && $('practiceModal').style.display === 'flex') closePractice();
+  if (e.key !== 'Escape') return;
+  if ($('practiceModal').style.display === 'flex') closePractice();
+  else if ($('prepModal').style.display === 'flex') closePrep();
 });
+
+/* -------------------------------------------------------------- 图片预处理 */
+
+/**
+ * 预处理参数（每次打开修图面板重置，点「应用」才真正写回页面）。
+ * 只记几何/增强开关，不缓存像素 —— 换页或改参数都重算一遍，逻辑最简单。
+ */
+let prep = { rot: 0, flip: false, crop: false, enhance: false, level: 55 };
+
+/** 打开修图面板并预览当前页 */
+function openPrep() {
+  if (!pages[curPage] || !pages[curPage].img.naturalWidth) { setHint('请先加载谱图'); return; }
+  $('morePop').classList.remove('open');
+  prep = { rot: 0, flip: false, crop: false, enhance: false, level: parseInt($('prepLevel').value, 10) || 55 };
+  $('prepPageNo').textContent = curPage + 1;
+  syncPrepUI();
+  $('prepModal').style.display = 'flex';
+  renderPrep();
+}
+
+function closePrep() { $('prepModal').style.display = 'none'; }
+
+/** 同步修图面板按钮高亮 */
+function syncPrepUI() {
+  $('prepFlip').classList.toggle('active', prep.flip);
+  $('prepCrop').classList.toggle('active', prep.crop);
+  $('prepEnh').classList.toggle('active', prep.enhance);
+  $('prepLevel').value = prep.level;
+  $('prepLevelVal').textContent = prep.level;
+}
+
+/**
+ * 按当前 prep 参数生成一张处理好的全分辨率 canvas。
+ * 顺序：几何（旋转/镜像）→ 裁白边 → 去阴影增强。
+ */
+function prepCanvas(pg, opt) {
+  const src = pg.img;
+  const nw = src.naturalWidth;
+  const nh = src.naturalHeight;
+  const r = ((opt.rot % 360) + 360) % 360;
+  const swap = (r === 90 || r === 270);
+
+  let cv = document.createElement('canvas');
+  cv.width = swap ? nh : nw;
+  cv.height = swap ? nw : nh;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.save();
+  ctx.translate(cv.width / 2, cv.height / 2);
+  ctx.rotate((r * Math.PI) / 180);
+  if (opt.flip) ctx.scale(-1, 1);
+  ctx.drawImage(src, -nw / 2, -nh / 2, nw, nh);
+  ctx.restore();
+
+  if (opt.crop) {
+    const c2 = cropWhite(cv);
+    if (c2) cv = c2;
+  }
+  if (opt.enhance && opt.level > 0) enhanceContrast(cv, opt.level);
+  return cv;
+}
+
+/** 预览：把处理结果等比缩放到面板宽度 */
+function renderPrep() {
+  const pg = pages[curPage];
+  if (!pg || !pg.img.naturalWidth) return;
+  const cv = prepCanvas(pg, prep);
+  const box = $('prepCanvas');
+  const maxW = 760;
+  const s = Math.min(1, maxW / cv.width);
+  box.width = Math.max(1, Math.round(cv.width * s));
+  box.height = Math.max(1, Math.round(cv.height * s));
+  const bctx = box.getContext('2d');
+  bctx.imageSmoothingEnabled = true;
+  bctx.fillStyle = '#fff';
+  bctx.fillRect(0, 0, box.width, box.height);
+  bctx.drawImage(cv, 0, 0, box.width, box.height);
+}
+
+/** 求内容（暗像素）包围盒；整幅全白时返回 null 表示「没什么可裁」 */
+function contentBounds(cv) {
+  const w = cv.width;
+  const h = cv.height;
+  const d = cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y += 2) {
+    let hit = false;
+    for (let x = 0; x < w; x += 2) {
+      const i = (y * w + x) * 4;
+      if (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2] < 200) {
+        hit = true;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+      }
+    }
+    if (hit) { if (y < minY) minY = y; maxY = y; }
+  }
+  if (maxX < 0 || maxY < 0) return null;
+  return { x0: minX, y0: minY, x1: maxX, y1: maxY };
+}
+
+/** 裁掉四周空白（留 10px 边距） */
+function cropWhite(cv) {
+  const bb = contentBounds(cv);
+  if (!bb) return null;
+  const pad = 10;
+  const x = Math.max(0, bb.x0 - pad);
+  const y = Math.max(0, bb.y0 - pad);
+  const w = Math.min(cv.width - x, bb.x1 - bb.x0 + 1 + pad * 2);
+  const h = Math.min(cv.height - y, bb.y1 - bb.y0 + 1 + pad * 2);
+  if (w <= 8 || h <= 8 || (w >= cv.width - 2 && h >= cv.height - 2)) return null;   // 没得裁
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(cv, -x, -y);
+  return out;
+}
+
+/**
+ * 去阴影 + 对比度拉伸（原地改写 canvas 像素）。
+ * 手机拍谱最常见的问题：光照不均导致一侧发灰，投影识别会把整片灰当成谱行。
+ * 做法：把图缩到 1/40 再放大回来当作「背景光照估计」，用 原图/背景 抵消明暗差异，
+ *      再按 2%–98% 分位做直方图拉伸；level>70 时轻微推向二值，让谱线更"实"。
+ */
+function enhanceContrast(cv, level) {
+  const w = cv.width;
+  const h = cv.height;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, w, h);
+  const p = img.data;
+
+  // ① 灰度
+  const g = new Uint8ClampedArray(w * h);
+  for (let k = 0, i = 0; k < g.length; k++, i += 4) {
+    g[k] = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
+  }
+
+  // ② 背景光照估计：降采样 → 放大回原尺寸
+  const bw = Math.max(1, Math.round(w / 40));
+  const bh = Math.max(1, Math.round(h / 40));
+  const tmp = document.createElement('canvas');
+  tmp.width = bw;
+  tmp.height = bh;
+  const tctx = tmp.getContext('2d');
+  const small = tctx.createImageData ? tctx.createImageData(bw, bh)
+    : { data: new Uint8ClampedArray(bw * bh * 4), width: bw, height: bh };
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      const sx = Math.min(w - 1, Math.floor((bx * w) / bw));
+      const sy = Math.min(h - 1, Math.floor((by * h) / bh));
+      const v = g[sy * w + sx];
+      const o = (by * bw + bx) * 4;
+      small.data[o] = v; small.data[o + 1] = v; small.data[o + 2] = v; small.data[o + 3] = 255;
+    }
+  }
+  tctx.putImageData(small, 0, 0);
+
+  const bgCv = document.createElement('canvas');
+  bgCv.width = w;
+  bgCv.height = h;
+  const bctx = bgCv.getContext('2d');
+  bctx.imageSmoothingEnabled = true;
+  bctx.drawImage(tmp, 0, 0, w, h);
+  const bd = bctx.getImageData(0, 0, w, h).data;
+
+  // ③ 除法去阴影 + 直方图统计
+  const out = new Uint8ClampedArray(w * h);
+  const hist = new Uint32Array(256);
+  for (let k = 0; k < out.length; k++) {
+    const b = Math.max(24, bd[k * 4]);          // 下限防止除出噪点
+    const v = Math.min(255, Math.round((g[k] * 255) / b));
+    out[k] = v;
+    hist[v]++;
+  }
+
+  // ④ 2% / 98% 分位作为黑场白场
+  const total = out.length;
+  let acc = 0, lo = 0, hi = 255;
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= total * 0.02) { lo = v; break; } }
+  acc = 0;
+  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= total * 0.02) { hi = v; break; } }
+  const span = Math.max(1, hi - lo);
+
+  // ⑤ 拉伸 +（可选）推向二值，最后按强度与原图混合
+  const kk = level / 100;
+  const push = level > 70 ? ((level - 70) / 30) * 60 : 0;
+  for (let k = 0, i = 0; k < out.length; k++, i += 4) {
+    let v = ((out[k] - lo) * 255) / span;
+    if (push) v = v > 150 ? v + push : v - push;
+    v = Math.max(0, Math.min(255, v));
+    const fin = g[k] * (1 - kk) + v * kk;
+    p[i] = p[i + 1] = p[i + 2] = fin;
+    p[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/** 把某页的图片整张换成新的 src（原图地址保留在 pg.orig，便于还原） */
+function replacePageImage(pi, url, keepBands) {
+  const pg = pages[pi];
+  if (!pg) return;
+  const im = new Image();
+  im.onload = () => {
+    pg.img = im;
+    pg.src = url;
+    pg.w = im.naturalWidth;
+    pg.h = im.naturalHeight;
+    if (!keepBands) { pg.bands = []; marks = marks.filter((m) => m.page !== pi); }
+    if (viewMode === 'scroll') buildScrollView();
+    switchPageDisplay(pi);
+    renderPageNav();
+    renderSections();
+  };
+  im.onerror = () => setHint('图片处理失败，请重试');
+  im.src = url;
+}
+
+/** 应用预处理结果到当前页 */
+function applyPrep() {
+  const pg = pages[curPage];
+  if (!pg || !pg.img.naturalWidth) return;
+  if (!prep.rot && !prep.flip && !prep.crop && !prep.enhance) { setHint('没有做任何调整'); return; }
+  const cv = prepCanvas(pg, prep);
+  let url;
+  try {
+    url = cv.toDataURL('image/jpeg', 0.92);
+  } catch (e) {
+    setHint('图片导出失败（环境不支持 canvas 导出）');
+    return;
+  }
+  replacePageImage(curPage, url, false);
+  renderBandList();
+  closePrep();
+  setLed('', '已应用修图（第 ' + (curPage + 1) + ' 页）');
+  setHint('已替换当前页；谱行坐标作废，请重新「🤖 自动识别」。需要撤销可用「🛠 修图 → ↩ 还原原图」。');
+}
+
+/** 还原到载入时的原始图片 */
+function resetPageImage() {
+  const pg = pages[curPage];
+  if (!pg) return;
+  const orig = pg.orig || pg.src;
+  replacePageImage(curPage, orig, false);
+  renderBandList();
+  prep = { rot: 0, flip: false, crop: false, enhance: false, level: prep.level };
+  syncPrepUI();
+  renderPrep();
+  setHint('已还原当前页原图，谱行需重新识别');
+}
+
+$('btnPrep').onclick = openPrep;
+$('prepClose').onclick = closePrep;
+$('prepModal').onclick = (e) => { if (e.target.id === 'prepModal') closePrep(); };
+$('prepRotL').onclick = () => { prep.rot -= 90; renderPrep(); };
+$('prepRotR').onclick = () => { prep.rot += 90; renderPrep(); };
+$('prepFlip').onclick = () => { prep.flip = !prep.flip; syncPrepUI(); renderPrep(); };
+$('prepCrop').onclick = () => { prep.crop = !prep.crop; syncPrepUI(); renderPrep(); };
+$('prepEnh').onclick = () => { prep.enhance = !prep.enhance; syncPrepUI(); renderPrep(); };
+$('prepLevel').oninput = (e) => {
+  prep.level = parseInt(e.target.value, 10);
+  $('prepLevelVal').textContent = prep.level;
+  if (prep.enhance) renderPrep();
+};
+$('prepApply').onclick = applyPrep;
+$('prepReset').onclick = resetPageImage;
 
 /* 段落标记：在当前行打点（回车即可确认） */
 $('btnAddMark').onclick = () => {

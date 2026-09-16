@@ -41,11 +41,16 @@ const fakeCtx = new Proxy({}, {
       return (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4).fill(255), width: w, height: h });
     }
     if (k === 'canvas') return { width: 800, height: 380 };
+    if (k === 'createImageData') {
+      return (w, h) => ({ data: new Uint8ClampedArray(w * h * 4).fill(255), width: w, height: h });
+    }
     return () => {};
   },
   set() { return true; },
 });
 win.HTMLCanvasElement.prototype.getContext = () => fakeCtx;
+// jsdom 未实现 canvas 导出（需要 node-canvas），修图/导出会用到，这里桩掉
+win.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,ZmFrZQ==';
 
 class FakeImage {
   constructor() { this.naturalWidth = 0; this.naturalHeight = 0; this._src = ''; }
@@ -259,16 +264,61 @@ window.addEventListener('load', function () {
           closePractice();
           ok('练习面板：关闭后隐藏', getComputedStyle(document.getElementById('practiceModal')).display === 'none');
 
-          document.getElementById('btnClear').click();
-          ok('清空后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');
-          ok('清空后滚动视图无残留页', document.querySelectorAll('#scrollView .scrollPage').length === 0);
-          ok('清空后段落标记一并清除', marks.length === 0 && document.querySelectorAll('#sectionList .secItem').length === 0,
-            'marks=' + marks.length);
+          // ===== 新增：PDF 导入（真实渲染需二进制 PDF，这里只测类型分发） =====
+          ok('PDF 识别：.pdf 扩展名', isPdfFile({ name: 'a.pdf', type: '' }) === true);
+          ok('PDF 识别：application/pdf 的 MIME', isPdfFile({ name: 'x', type: 'application/pdf' }) === true);
+          ok('PDF 识别：.PDF 大写扩展名', isPdfFile({ name: 'B.PDF', type: '' }) === true);
+          ok('PDF 识别：jpg 不算 PDF', isPdfFile({ name: 'a.jpg', type: 'image/jpeg' }) === false);
+          ok('PDF 识别：无扩展名不算 PDF', isPdfFile({ name: 'a', type: '' }) === false);
+          ok('PDF 导入入口存在且是异步函数', typeof importPdf === 'function' && importPdf.constructor.name === 'AsyncFunction');
 
-          var pre = document.createElement('pre');
-          pre.id = 'VERIFY';
-          pre.textContent = R.join('\\n');
-          document.body.appendChild(pre);
+          // ===== 新增：图片预处理（修图） =====
+          var srcBefore = pages[0].src;
+          document.getElementById('btnPrep').click();
+          ok('修图面板：打开后可见', getComputedStyle(document.getElementById('prepModal')).display !== 'none');
+          ok('修图面板：初始无操作', prep.rot === 0 && !prep.flip && !prep.crop && !prep.enhance);
+          document.getElementById('prepRotR').click();
+          ok('修图：右转 90°', prep.rot === 90, 'rot=' + prep.rot);
+          document.getElementById('prepRotL').click();
+          document.getElementById('prepRotL').click();
+          ok('修图：左转两次 = -90°', prep.rot === -90, 'rot=' + prep.rot);
+          document.getElementById('prepFlip').click();
+          document.getElementById('prepCrop').click();
+          document.getElementById('prepEnh').click();
+          ok('修图：镜像 / 裁边 / 增强三个开关都生效',
+            prep.flip === true && prep.crop === true && prep.enhance === true);
+          var pgc = prepCanvas(pages[0], prep);
+          ok('修图：旋转 90° 后 canvas 宽高互换（1000×1400 → 1400×1000）',
+            pgc.width === 1400 && pgc.height === 1000, pgc.width + 'x' + pgc.height);
+          ok('修图：全白桩图裁边判定为「没得裁」，不抛异常', cropWhite(pgc) === null);
+
+          document.getElementById('prepApply').click();
+          ok('修图：点应用后面板关闭', getComputedStyle(document.getElementById('prepModal')).display === 'none');
+          win.setTimeout(function () {
+            ok('修图：应用后当前页换成处理后的 dataURL',
+              pages[0].src !== srcBefore && /^data:image/.test(pages[0].src), pages[0].src.slice(0, 24));
+            ok('修图：应用后该页谱行作废（坐标已变）', pages[0].bands.length === 0, 'n=' + pages[0].bands.length);
+            ok('修图：应用后清掉该页段落标记（其它页保留）',
+              marks.every(function (m) { return m.page !== 0; }), 'marks=' + marks.length);
+
+            openPrep();
+            document.getElementById('prepReset').click();
+            win.setTimeout(function () {
+              ok('修图：还原原图回到载入时的 src', pages[0].src === srcBefore, String(pages[0].src).slice(0, 24));
+              closePrep();
+
+              document.getElementById('btnClear').click();
+              ok('清空后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');
+              ok('清空后滚动视图无残留页', document.querySelectorAll('#scrollView .scrollPage').length === 0);
+              ok('清空后段落标记一并清除', marks.length === 0 && document.querySelectorAll('#sectionList .secItem').length === 0,
+                'marks=' + marks.length);
+
+              var pre = document.createElement('pre');
+              pre.id = 'VERIFY';
+              pre.textContent = R.join('\\n');
+              document.body.appendChild(pre);
+            }, 60);
+          }, 60);
         }, 80);
       }, 350);
     }, 900);

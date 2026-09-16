@@ -239,6 +239,17 @@
   .pm-row .du { font-weight: 700; }
   .pm-row .ex { flex: 1 1 auto; color: var(--sub, #667085); }
   .pm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+  /* ---- 修图面板 ---- */
+  .prep-canvas-box {
+    background: repeating-conic-gradient(#e9ecf1 0% 25%, #fff 0% 50%) 50% / 18px 18px;
+    border: 1px solid var(--line, #e5e7eb); border-radius: 10px;
+    padding: 6px; margin-bottom: 10px; text-align: center;
+  }
+  #prepCanvas { max-width: 100%; height: auto; display: block; margin: 0 auto; border-radius: 4px; }
+  .prep-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .prep-bar .lbl { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--sub, #667085); }
+  .prep-bar input[type=range] { width: 96px; }
 </style>
 </head>
 <body>
@@ -271,13 +282,14 @@
       <span class="glabel">文件</span>
       <button class="btn primary" id="btnLoad">📂 加载谱图</button>
       <button class="btn" id="btnAdd">➕ 追加页</button>
-      <input type="file" id="fileInput" accept="image/*" multiple style="display:none">
+      <input type="file" id="fileInput" accept="image/*,.pdf,application/pdf" multiple style="display:none">
     </div>
 
     <div class="group">
       <span class="glabel">识别</span>
       <button class="btn" id="btnDetect">🤖 自动识别</button>
       <button class="btn" id="btnManual">✌️ 手动框行</button>
+      <button class="btn" id="btnPrep" title="旋转 / 镜像 / 自动裁边 / 去阴影增强，改善手机拍照谱图的识别率">🛠 修图</button>
       <button class="btn" id="btnClear">🗑 清空</button>
     </div>
 
@@ -323,7 +335,7 @@
   <div class="stage" id="stage">
     <div id="stageEmpty" class="stageEmpty">
       <b>还没有载入谱图</b>
-      <span>点「📂 加载谱图」可一次性多选同一首歌的多张图片（每张 = 一页，按顺序拼成一条时间轴）；<br>也可以从「⋯ 更多 → 🖼 示例谱」先试玩一下。</span>
+      <span>点「📂 加载谱图」可一次性多选同一首歌的多张图片（每张 = 一页，按顺序拼成一条时间轴）；<br>也支持直接导入 <b>PDF 吉他谱</b>（每一页渲染成一张谱图）。<br>也可以从「⋯ 更多 → 🖼 示例谱」先试玩一下。</span>
     </div>
     <div id="imgWrap">
       <img id="tabImg" alt="谱图">
@@ -364,6 +376,32 @@
     </div>
     <div class="tip" id="tipManual" style="display:none">手动框行中：点击第 <b id="manualStep">1</b> 个边界（上/下）。</div>
   </aside>
+
+  <!-- 修图：旋转 / 镜像 / 裁边 / 去阴影增强（手机拍照谱图预处理） -->
+  <div class="modal" id="prepModal" style="display:none" role="dialog" aria-modal="true" aria-label="修图">
+    <div class="modal-card">
+      <div class="modal-head">
+        <b>🛠 修图（第 <span id="prepPageNo">1</span> 页）</b>
+        <button class="x" id="prepClose" title="关闭" aria-label="关闭">✕</button>
+      </div>
+      <div class="prep-canvas-box">
+        <canvas id="prepCanvas" width="760" height="420"></canvas>
+      </div>
+      <div class="prep-bar">
+        <button class="btn sm" id="prepRotL" title="逆时针 90°">↺ 左转</button>
+        <button class="btn sm" id="prepRotR" title="顺时针 90°">↻ 右转</button>
+        <button class="btn sm" id="prepFlip" title="水平镜像（翻面拍摄的谱图用）">⇋ 镜像</button>
+        <button class="btn sm" id="prepCrop" title="自动裁掉四周空白">✂ 裁白边</button>
+        <button class="btn sm" id="prepEnh" title="去阴影 + 对比度拉伸">🌓 增强</button>
+        <span class="lbl">强度<input id="prepLevel" type="range" min="10" max="100" step="5" value="55" aria-label="增强强度"><b id="prepLevelVal">55</b></span>
+      </div>
+      <p class="pm-sub">处理只作用于当前页，确认无误后点「应用」；谱行坐标会失效，需要重新识别一次。</p>
+      <div class="pm-actions">
+        <button class="btn sm" id="prepReset">↩ 还原原图</button>
+        <button class="btn sm primary" id="prepApply">✅ 应用到当前页</button>
+      </div>
+    </div>
+  </div>
 
   <!-- 练习记录：本地统计（时长 / 循环次数 / 速度 / 近 7 天分布） -->
   <div class="modal" id="practiceModal" style="display:none" role="dialog" aria-modal="true" aria-label="练习记录">

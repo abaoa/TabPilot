@@ -45,25 +45,70 @@
   .pageNav .slash { opacity: .55; }
   .pageNav b { color: var(--ink); font-variant-numeric: tabular-nums; }
   .btn.sm { padding: 4px 9px; font-size: 12px; }
-  .pageStrip {
+  /* 舞台底部胶片条：真实缩略图，多页一眼可见、点击切换（常驻底部） */
+  .filmstrip {
+    position: sticky;
+    bottom: 0;
+    flex: 0 0 auto;
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 10px;
+    gap: 8px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,.28) 55%, rgba(0,0,0,.46) 100%);
+    z-index: 5;
   }
-  .pageThumb {
-    width: 34px;
-    height: 34px;
+  .filmstrip .thumb {
+    position: relative;
+    flex: 0 0 auto;
+    width: 92px;
+    height: 62px;
     padding: 0;
-    justify-content: center;
-    font-size: 12.5px;
+    border: 2px solid rgba(255,255,255,.35);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #000;
+    cursor: pointer;
+    transition: border-color .15s, transform .15s;
+  }
+  .filmstrip .thumb:hover { transform: translateY(-2px); }
+  .filmstrip .thumb img {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block;
+    opacity: .8;
+  }
+  .filmstrip .thumb.cur { border-color: #fff; }
+  .filmstrip .thumb.cur img { opacity: 1; }
+  .filmstrip .thumb span {
+    position: absolute;
+    left: 4px; bottom: 3px;
+    font-size: 11px;
+    line-height: 1;
+    padding: 2px 5px;
+    border-radius: 6px;
+    background: rgba(0,0,0,.62);
+    color: #fff;
     font-variant-numeric: tabular-nums;
   }
-  .pageThumb.cur {
-    background: var(--brand);
-    border-color: var(--brand);
-    color: #fff;
+
+  /* 「更多」下拉菜单：收纳低频操作，降低工具栏密度 */
+  .menu { position: relative; }
+  .menu-pop {
+    display: none;
+    position: absolute;
+    right: 0; top: calc(100% + 6px);
+    min-width: 152px;
+    padding: 6px;
+    border-radius: 10px;
+    background: var(--panel, #fff);
+    box-shadow: 0 10px 30px rgba(0,0,0,.18);
+    border: 1px solid var(--line, #e5e7eb);
+    z-index: 30;
+    flex-direction: column;
+    gap: 4px;
   }
+  .menu-pop.open { display: flex; }
+  .menu-pop .btn.block { width: 100%; justify-content: flex-start; text-align: left; }
 </style>
 </head>
 <body>
@@ -96,28 +141,30 @@
       <button class="btn primary" id="btnLoad">📂 加载谱图</button>
       <button class="btn" id="btnAdd">➕ 追加页</button>
       <input type="file" id="fileInput" accept="image/*" multiple style="display:none">
-      <button class="btn" id="btnDemo">🖼 示例谱</button>
     </div>
 
     <div class="group">
       <span class="glabel">识别</span>
-      <button class="btn" id="btnDetect">🤖 自动识别谱行</button>
+      <button class="btn" id="btnDetect">🤖 自动识别</button>
       <button class="btn" id="btnManual">✌️ 手动框行</button>
       <button class="btn" id="btnClear">🗑 清空</button>
     </div>
 
     <div class="group">
-      <span class="glabel">播放</span>
+      <span class="glabel">跟随</span>
       <button class="btn primary" id="btnPlay">▶ 开始跟随</button>
-      <button class="btn" id="btnPause">⏸ 暂停</button>
-      <button class="btn" id="btnStop">⏹ 停止</button>
-      <button class="btn" id="btnMetro">🔔 节拍器</button>
+      <button class="btn" id="btnPause">⏸</button>
+      <button class="btn" id="btnStop">⏹</button>
     </div>
 
-    <div class="group">
-      <span class="glabel">视图</span>
-      <button class="btn only-wide" id="btnPanel">☰ 行列表</button>
-      <button class="btn icon" id="btnMag" title="放大镜开关" aria-label="放大镜开关">🔍</button>
+    <div class="menu">
+      <button class="btn" id="btnMore" aria-haspopup="true" aria-expanded="false">⋯ 更多</button>
+      <div class="menu-pop" id="morePop" role="menu">
+        <button class="btn block" id="btnDemo">🖼 示例谱</button>
+        <button class="btn block" id="btnMetro">🔔 节拍器</button>
+        <button class="btn block" id="btnMag">🔍 放大镜</button>
+        <button class="btn block" id="btnPanel">☰ 行列表</button>
+      </div>
     </div>
   </div>
 </header>
@@ -129,6 +176,7 @@
       <div id="barBox"></div>
       <div id="scanline"></div>
     </div>
+    <div class="filmstrip" id="filmstrip" aria-label="多页缩略图"></div>
   </div>
 
   <aside class="app-aside" id="bandPanel">
@@ -139,7 +187,6 @@
       <b id="pageNum">0</b><span class="slash">/</span><b id="pageTotal">0</b>
       <button class="btn sm" id="btnNextPage" aria-label="下一页">▶</button>
     </div>
-    <div class="pageStrip" id="pageStrip"></div>
     <div id="bandList">
       <div class="tip">加载图片后点「🤖 自动识别谱行」，或用「✌️ 手动框行」在图上依次点击行的上、下边界。</div>
     </div>

@@ -488,17 +488,23 @@ function renderPageNav() {
   $('btnPrevPage').disabled = curPage <= 0;
   $('btnNextPage').disabled = curPage >= total - 1;
 
-  const strip = $('pageStrip');
+  const strip = $('filmstrip');
   if (!strip) return;
-  if (!total) { strip.innerHTML = ''; return; }
   strip.innerHTML = '';
+  if (!total) return;
   pages.forEach((pg, i) => {
-    const btn = document.createElement('button');
-    btn.className = 'pageThumb' + (i === curPage ? ' cur' : '');
-    btn.title = '第 ' + (i + 1) + ' 页';
-    btn.textContent = (i + 1);
-    btn.onclick = () => gotoPage(i);
-    strip.appendChild(btn);
+    const b = document.createElement('button');
+    b.className = 'thumb' + (i === curPage ? ' cur' : '');
+    b.title = '第 ' + (i + 1) + ' 页（点击切换）';
+    const im = document.createElement('img');
+    im.src = pg.src;
+    im.alt = '第 ' + (i + 1) + ' 页';
+    b.appendChild(im);
+    const tag = document.createElement('span');
+    tag.textContent = (i + 1);
+    b.appendChild(tag);
+    b.onclick = () => gotoPage(i);
+    strip.appendChild(b);
   });
 }
 
@@ -656,6 +662,17 @@ $('btnPause').onclick = pause;
 $('btnStop').onclick = () => stop();
 $('btnPrevPage').onclick = () => gotoPage(curPage - 1);
 $('btnNextPage').onclick = () => gotoPage(curPage + 1);
+
+// 「更多」菜单：收纳低频操作（示例谱/节拍器/放大镜/行列表），降低工具栏密度
+const morePop = $('morePop');
+$('btnMore').onclick = (e) => {
+  e.stopPropagation();
+  const open = morePop.classList.toggle('open');
+  $('btnMore').setAttribute('aria-expanded', open ? 'true' : 'false');
+};
+document.addEventListener('click', (e) => {
+  if (!morePop.contains(e.target)) morePop.classList.remove('open');
+});
 $('btnClear').onclick = () => {
   pages = []; curPage = 0; bands = [];
   stop();
@@ -749,7 +766,8 @@ function showPosition(bandIdx, barIdx, p = 0) {
   $('barNum').textContent = (barIdx + 1) + ' / ' + b.bars;
 
   document.querySelectorAll('.bandItem').forEach((it, i) => it.classList.toggle('cur', i === bandIdx));
-  document.querySelectorAll('.pageThumb').forEach((it, i) => it.classList.toggle('cur', i === curPage));
+  const ft = document.querySelectorAll('#filmstrip .thumb');
+  ft.forEach((it, i) => it.classList.toggle('cur', i === curPage));
 
   if (magOn) drawMag(x, b.y0, w, b.y1 - b.y0);
 }

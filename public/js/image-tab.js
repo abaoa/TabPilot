@@ -80,6 +80,17 @@ let viewMode = 'flip';
 let pageOv = [];
 let pageTop = [];
 let pageScale = [];
+/**
+ * 段落标记：{ page, band, name, color }
+ * 存的是「页 + 行」而不是时间 —— 改 BPM / 改每行小节数后段落位置依然正确。
+ */
+let marks = [];
+/** 段落配色轮转 */
+const SEC_COLORS = ['#2f6fed', '#e11d48', '#f59e0b', '#10b981', '#8b5cf6', '#06b6d4'];
+/** 练习记录：本次会话累计时长 / 本段起点 / 循环次数 */
+let sessMs = 0;
+let sessStart = 0;
+let sessLoops = 0;
 
 /* ---------------------------------------------------------------- 工具函数 */
 
@@ -92,6 +103,13 @@ function setLed(cls, text) {
 /** 设置底部提示文字（受"显示操作提示"设置控制可见性） */
 function setHint(t) {
   $('hint').textContent = t;
+}
+
+/** HTML 转义：段落名等用户输入在拼 innerHTML 前必须过一遍 */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
 }
 
 /* ------------------------------------------------------------------ 节拍器 */
@@ -294,7 +312,7 @@ function drawBandsScroll() {
     const ov = pageOv[pi];
     if (!ov) return;
     // 只清谱行/标注，不清播放头（barBox 等已被移到本覆盖层内）
-    ov.querySelectorAll('.band, .measureTag').forEach((n) => n.remove());
+    ov.querySelectorAll('.band, .measureTag, .secTag, .secBar').forEach((n) => n.remove());
     const s = pageScale[pi] || 1;
     pg.bands.forEach((b, i) => {
       const d = document.createElement('div');
@@ -316,6 +334,9 @@ function drawBandsScroll() {
       tag.textContent = b.bars > 1 ? ('m' + m0 + '–' + m1) : ('m' + m0);
       ov.appendChild(tag);
     });
+
+    // 滚动模式整谱长图，所有页的段落标记都画
+    marks.forEach((m, mi) => { if (m.page === pi) drawSection(m, mi, ov, s); });
   });
 }
 
@@ -389,6 +410,8 @@ $('btnDetect').onclick = () => {
   if (!pages[curPage] || !pages[curPage].img.naturalWidth) { setHint('请先加载谱图'); return; }
   pages[curPage].bands = detectBands();
   bands = pages[curPage].bands;
+  pruneMarks();
+  renderSections();
   renderBandList();
   setLed('ok', '已识别 ' + bands.length + ' 行（第 ' + (curPage + 1) + ' 页）');
   setHint('检查右侧行列表：可删除误检行、修改每行小节数，然后点「▶ 开始跟随」');
@@ -665,6 +688,7 @@ function renderBandList() {
     btn.onclick = (e) => {
       e.stopPropagation();
       bands.splice(+btn.dataset.del, 1);
+      pruneMarks();
       renderBandList();
     };
   });
@@ -679,8 +703,7 @@ function renderBandList() {
 /** 在图上绘制谱行覆盖层（半透明框，便于核对识别结果） */
 function drawBands() {
   if (viewMode === 'scroll') { drawBandsScroll(); return; }
-  imgWrap.querySelectorAll('.band').forEach((n) => n.remove());
-  imgWrap.querySelectorAll('.measureTag').forEach((n) => n.remove());
+  imgWrap.querySelectorAll('.band, .measureTag, .secTag, .secBar').forEach((n) => n.remove());
   for (let i = 0; i < bands.length; i++) {
     const b = bands[i];
     const d = document.createElement('div');
@@ -701,6 +724,202 @@ function drawBands() {
     tag.textContent = b.bars > 1 ? ('m' + m0 + '–' + m1) : ('m' + m0);
     imgWrap.appendChild(tag);
   }
+
+  // 段落标记只画「当前页」的（翻页模式一次只显示一页）
+  marks.forEach((m, i) => { if (m.page === curPage) drawSection(m, i, imgWrap, 1); });
+}
+
+/* -------------------------------------------------------------- 段落标记 */
+
+/** 全曲总小节数（用于算最后一段的结束小节号） */
+function totalMeasures() {
+  let n = 0;
+  for (const p of pages) for (const b of p.bands) n += b.bars;
+  return n;
+}
+
+/** 段落起点时间（ms）= 该页之前累计 + 该页本行之前各行时长 */
+function markTime(m) {
+  const pg = pages[m.page];
+  if (!pg) return 0;
+  const bs = pg.bands;
+  let t = durBeforePage(m.page);
+  for (let i = 0; i < Math.min(m.band, bs.length); i++) t += bandDur(bs[i]);
+  return t;
+}
+
+/** 段落终点时间（ms）= 下一个段落起点，最后一个段落取全曲末尾 */
+function markEnd(i) {
+  const nx = marks[i + 1];
+  return nx ? markTime(nx) : totalDur();
+}
+
+/** 段落覆盖的小节区间 [起, 止]（显示用，1 基） */
+function markMeasures(i) {
+  const m = marks[i];
+  if (!m) return [1, 1];
+  const a = measureStartAt(m.page, m.band) + 1;
+  const nx = marks[i + 1];
+  const bEnd = nx
+    ? measureStartAt(nx.page, nx.band)                         // 下一段起点前一小节
+    : ((window.TPSettings.get('startMeasure') || 1) - 1 + totalMeasures());
+  return [a, Math.max(a, bEnd)];
+}
+
+/** 当前位置属于哪个段落（按页 + 行比较，marks 已按 (page,band) 升序） */
+function sectionOfPos(pi, bi) {
+  let name = null;
+  for (const m of marks) {
+    if (m.page < pi || (m.page === pi && m.band <= bi)) name = m.name;
+    else break;
+  }
+  return name;
+}
+
+/** 当前音乐时间落在哪个段落（写练习记录时用） */
+function sectionAt(t) {
+  let name = null;
+  for (const m of marks) if (t >= markTime(m)) name = m.name;
+  return name;
+}
+
+/** 刷新底部「段落」芯片 */
+function updateSecChip(pi, bi) {
+  const chip = $('secChip');
+  if (!chip) return;
+  const nm = marks.length ? sectionOfPos(pi, bi) : null;
+  chip.style.display = nm ? '' : 'none';
+  $('secName').textContent = nm || '-';
+}
+
+/**
+ * 给某一页某一行打段落标记（同位置重复打 = 改名）。
+ * @param {number} pi 页索引
+ * @param {number} bi 行索引
+ * @param {string} [name] 段落名，空则自动命名
+ */
+function addMarkAt(pi, bi, name) {
+  const pg = pages[pi];
+  if (!pg || !pg.bands[bi]) { setHint('先识别谱行，再把某一行标成段落起点'); return; }
+  const nm = String(name || '').trim() || ('段落 ' + (marks.length + 1));
+  const ex = marks.findIndex((m) => m.page === pi && m.band === bi);
+  if (ex >= 0) {
+    marks[ex].name = nm;
+  } else {
+    marks.push({ page: pi, band: bi, name: nm, color: SEC_COLORS[marks.length % SEC_COLORS.length] });
+    marks.sort((a, b) => (a.page - b.page) || (a.band - b.band));
+  }
+  renderSections();
+  drawBands();
+  setHint('已标记「' + nm + '」→ 第 ' + (pi + 1) + ' 页第 ' + (bi + 1) + ' 行');
+}
+
+/**
+ * 清理失效的段落标记：删行 / 重新识别后行数变少，
+ * 越界的标记会让「跳段」跳到不存在的行，直接丢掉（保守但不会错跳）。
+ */
+function pruneMarks() {
+  marks = marks.filter((m) => {
+    const pg = pages[m.page];
+    return pg && m.band < pg.bands.length;
+  });
+}
+
+/** 跳到段落起点 */
+function seekMark(i) {
+  const m = marks[i];
+  if (!m) return;
+  if (m.page !== curPage) switchPageDisplay(m.page);
+  seekBand(m.band);
+}
+
+/** 把 A/B 循环设成该段落并开启循环 */
+function loopMark(i) {
+  const m = marks[i];
+  if (!m) return;
+  loopA = markTime(m);
+  loopB = markEnd(i);
+  loopOn = (loopB > loopA);
+  updateLoopUI();
+  if (loopOn && (playing || paused)) startAtTime(loopA);
+  setHint(loopOn
+    ? ('循环段落「' + m.name + '」：' + (loopA / 1000).toFixed(1) + 's → ' + (loopB / 1000).toFixed(1) + 's')
+    : '该段落时长为 0，无法循环（检查后面是否还有段落）');
+}
+
+/** 渲染侧栏段落列表 */
+function renderSections() {
+  const el = $('sectionList');
+  if (!el) return;
+  if (!marks.length) {
+    el.innerHTML = '<div class="secTip">还没有段落。跳到某一行后填名字点「＋」，即可把该行标成段落起点。</div>';
+    updateSecChip(curPage, curBand);
+    return;
+  }
+  el.innerHTML = marks.map((m, i) => {
+    const [a, b] = markMeasures(i);
+    const sec = (markEnd(i) - markTime(m)) / 1000;
+    return '<div class="secItem" data-i="' + i + '">' +
+      '<span class="dot" style="background:' + m.color + '"></span>' +
+      '<span class="nm">' + esc(m.name) + '</span>' +
+      '<span class="rng">m' + a + (b > a ? '–' + b : '') + ' · ' + sec.toFixed(1) + 's</span>' +
+      '<button class="mini" data-loop="' + i + '" title="循环该段" aria-label="循环' + esc(m.name) + '">⟳</button>' +
+      '<button class="mini" data-rm="' + i + '" title="删除该标记" aria-label="删除' + esc(m.name) + '">✕</button>' +
+      '</div>';
+  }).join('');
+
+  el.querySelectorAll('.secItem').forEach((it) => {
+    it.onclick = () => seekMark(+it.dataset.i);
+  });
+  el.querySelectorAll('[data-loop]').forEach((btn) => {
+    btn.onclick = (e) => { e.stopPropagation(); loopMark(+btn.dataset.loop); };
+  });
+  el.querySelectorAll('[data-rm]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      marks.splice(+btn.dataset.rm, 1);
+      renderSections();
+      drawBands();
+    };
+  });
+  updateSecChip(curPage, curBand);
+}
+
+/**
+ * 在覆盖层上画一个段落标记：行右上角的彩色药丸 + 段首左侧色条。
+ * @param {number} s 显示缩放（翻页模式为 1，滚动模式为各页 pageScale）
+ */
+function drawSection(m, idx, host, s) {
+  const pg = pages[m.page];
+  const b = pg && pg.bands[m.band];
+  if (!b) return;
+
+  const tag = document.createElement('div');
+  tag.className = 'secTag';
+  tag.textContent = m.name;
+  tag.style.left = (b.x1 * s) + 'px';
+  tag.style.top = (b.y0 * s) + 'px';
+  tag.style.background = m.color;
+  tag.style.setProperty('--sc', m.color);   // ::after 小箭头取同一颜色
+  host.appendChild(tag);
+
+  // 段首左侧色条：从本段起点画到下一段起点（同页内），同页无下一段则画到页底
+  let endY = pg.h || b.y1;
+  for (let j = idx + 1; j < marks.length; j++) {
+    if (marks[j].page !== m.page) continue;
+    const nb = pages[m.page].bands[marks[j].band];
+    if (nb) endY = nb.y0;
+    break;
+  }
+  const bar = document.createElement('div');
+  bar.className = 'secBar';
+  bar.style.left = Math.max(0, b.x0 * s - 10) + 'px';
+  bar.style.top = (b.y0 * s) + 'px';
+  bar.style.width = '3px';
+  bar.style.height = Math.max(0, (endY - b.y0) * s) + 'px';
+  bar.style.background = m.color;
+  bar.style.opacity = '.7';
+  host.appendChild(bar);
 }
 
 /* -------------------------------------------------------------- 页导航 UI */
@@ -848,6 +1067,7 @@ function startAtTime(t0ms) {
   lastBeat = -1;
   playing = true;
   paused = false;
+  if (!sessStart) sessStart = Date.now();   // 开始计本次练习时长
   timer = setInterval(tick, 40);
   setLed('ok', '图片谱跟随中');
   setHint('跟随中：红色框 = 当前小节，右下放大镜实时放大。跨页时自动翻页，点击任意行可跳转。');
@@ -859,6 +1079,8 @@ function pause() {
   if (!playing || paused) return;
   elapsedBase = musicNow();
   paused = true;
+  // 暂停也算练习时间，先结算本段（续播时重新起算）
+  if (sessStart) { sessMs += Date.now() - sessStart; sessStart = 0; }
   setLed('warn', '已暂停');
 }
 
@@ -866,6 +1088,7 @@ function pause() {
 function resume() {
   paused = false;
   t0 = performance.now();
+  sessStart = Date.now();
   setLed('ok', '图片谱跟随中');
 }
 
@@ -897,6 +1120,8 @@ function gotoPage(pi) {
 
 /** 停止播放。reset 为 true 时回到起点并清空状态灯 */
 function stop(reset = true) {
+  // 结算练习记录要赶在 curBand/curBar 被清掉之前（需要记录练到哪一节）
+  if (reset) finishPractice();
   if (timer) clearInterval(timer);
   timer = null;
   playing = false;
@@ -963,6 +1188,7 @@ function buildProject() {
       startMeasure: window.TPSettings.get('startMeasure') || 1,
       rate: window.TPSettings.get('rate'),
     },
+    marks: marks.map((m) => ({ page: m.page, band: m.band, name: m.name, color: m.color })),
     pages: pages.map((p) => ({
       src: p.src,
       bands: p.bands.map((b) => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, bars: b.bars })),
@@ -974,17 +1200,9 @@ function buildProject() {
 function exportProject() {
   if (!pages.length) { setHint('还没有可导出的内容：先加载谱图'); return; }
   const proj = buildProject();
-  const blob = new Blob([JSON.stringify(proj, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
   const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  a.href = url;
-  a.download = 'tabpilot-' + ts + '.json';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1500);
-  setHint('已导出工程文件（含谱图 + 谱行识别结果），下次「打开工程」即可免重框');
+  downloadText(JSON.stringify(proj, null, 2), 'tabpilot-' + ts + '.json', 'application/json');
+  setHint('已导出工程文件（含谱图 + 谱行识别结果 + 段落标记），下次「打开工程」即可免重框');
 }
 
 /** 应用工程对象：恢复页、谱行与参数（供「打开工程」与测试复用） */
@@ -993,7 +1211,19 @@ function applyProject(proj) {
   pages = [];
   curPage = 0;
   bands = [];
+  marks = Array.isArray(proj.marks)
+    ? proj.marks
+      .filter((m) => m && typeof m.page === 'number' && typeof m.band === 'number')
+      .map((m) => ({
+        page: m.page | 0,
+        band: m.band | 0,
+        name: String(m.name || '段落'),
+        color: m.color || SEC_COLORS[0],
+      }))
+      .sort((a, b) => (a.page - b.page) || (a.band - b.band))
+    : [];
   proj.pages.forEach((pg, idx) => loadProjectPage(pg.src, pg.bands || [], idx === 0));
+  renderSections();
 
   const st = proj.settings || {};
   if (st.bpm) $('bpm').value = st.bpm;
@@ -1033,6 +1263,211 @@ $('projInput').onchange = (e) => {
   e.target.value = '';   // 允许重复选择同一个文件
 };
 
+/* ------------------------------------------------------------ 练习记录 */
+
+const LOG_KEY = 'tabpilot.practiceLog';
+
+/** 读取本地练习日志（localStorage；Tauri 里同样是浏览器 localStorage，够用） */
+function loadLog() {
+  try {
+    const a = JSON.parse(localStorage.getItem(LOG_KEY));
+    return Array.isArray(a) ? a : [];
+  } catch (e) { return []; }
+}
+
+/** 写回本地练习日志（只保留最近 300 条，避免无限膨胀） */
+function saveLog(arr) {
+  try { localStorage.setItem(LOG_KEY, JSON.stringify(arr.slice(-300))); } catch (e) { /* 隐私模式等：忽略 */ }
+}
+
+/** 本地日期键 YYYY-MM-DD */
+function dayKey(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+/** 毫秒 → "1h05m" / "12m30s" */
+function fmtDur(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm' + String(s % 60).padStart(2, '0') + 's';
+  return Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0') + 'm';
+}
+
+/**
+ * 结算并写入一条练习记录。
+ * 只在 stop(true)（停止 / 播完 / 清空）时调用；startAtTime 用的是 stop(false)，
+ * 所以拖动跳转、续播不会把一次练习切成好几条。
+ */
+function finishPractice() {
+  if (sessStart) { sessMs += Date.now() - sessStart; sessStart = 0; }
+  if (sessMs < 5000) { sessMs = 0; sessLoops = 0; return; }   // 短于 5 秒不计，避免噪声
+  const meas = (curBand >= 0 && pages[curPage] && pages[curPage].bands[curBand])
+    ? measureStartAt(curPage, curBand) + Math.max(0, curBar) + 1
+    : null;
+  const log = loadLog();
+  log.push({
+    d: Date.now(),
+    ms: Math.round(sessMs),
+    loops: sessLoops,
+    rate: rate,
+    sec: sectionAt(curTime()),
+    meas,
+  });
+  saveLog(log);
+  sessMs = 0;
+  sessLoops = 0;
+}
+
+/** 打开练习记录面板 */
+function openPractice() {
+  $('morePop').classList.remove('open');
+  $('practiceModal').style.display = 'flex';
+  renderPractice();
+}
+
+function closePractice() {
+  $('practiceModal').style.display = 'none';
+}
+
+/** 渲染统计：总览卡片 + 近 7 天柱状图 + 最近记录 */
+function renderPractice() {
+  const log = loadLog();
+  const now = new Date();
+  const today = dayKey(now);
+
+  const byDay = {};
+  let totalMs = 0;
+  log.forEach((r) => {
+    totalMs += r.ms || 0;
+    const k = dayKey(new Date(r.d));
+    byDay[k] = (byDay[k] || 0) + (r.ms || 0);
+  });
+
+  const days = [];
+  let weekMs = 0;
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 86400000);
+    const k = dayKey(d);
+    const v = byDay[k] || 0;
+    weekMs += v;
+    days.push({ v, lb: (d.getMonth() + 1) + '/' + d.getDate() });
+  }
+
+  // 连续天数：今天没练就从昨天往前数
+  let streak = 0;
+  for (let i = 0; i < 400; i++) {
+    const k = dayKey(new Date(now.getTime() - i * 86400000));
+    if (byDay[k]) streak++;
+    else if (i > 0) break;
+  }
+
+  $('pmStats').innerHTML =
+    '<div class="pm-stat"><b>' + fmtDur(byDay[today] || 0) + '</b><span>今日</span></div>' +
+    '<div class="pm-stat"><b>' + fmtDur(weekMs) + '</b><span>近 7 天</span></div>' +
+    '<div class="pm-stat"><b>' + streak + ' 天</b><span>连续练习</span></div>' +
+    '<div class="pm-stat"><b>' + log.length + ' 次</b><span>累计次数</span></div>';
+
+  const maxV = Math.max.apply(null, days.map((d) => d.v).concat([1]));
+  $('pmChart').innerHTML = days.map((d) => {
+    const h = Math.max(2, Math.round((d.v / maxV) * 62));
+    return '<div class="pm-col">' +
+      '<span class="vv">' + (d.v ? Math.round(d.v / 60000) : '') + '</span>' +
+      '<div class="bar" style="height:' + h + 'px' + (d.v ? '' : ';opacity:.22') + '"></div>' +
+      '<span class="lb">' + d.lb + '</span>' +
+      '</div>';
+  }).join('');
+
+  const recent = log.slice(-12).reverse();
+  $('pmList').innerHTML = recent.length
+    ? recent.map((r) => {
+      const dt = new Date(r.d);
+      const ds = (dt.getMonth() + 1) + '/' + dt.getDate() + ' ' +
+        String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0');
+      const ex = [];
+      if (r.loops) ex.push('循环 ' + r.loops + ' 次');
+      if (r.rate && Math.abs(r.rate - 1) > 0.01) ex.push(r.rate.toFixed(2) + '×');
+      if (r.sec) ex.push(r.sec);
+      if (r.meas) ex.push('到 m' + r.meas);
+      return '<div class="pm-row"><span class="dt">' + ds + '</span>' +
+        '<span class="du">' + fmtDur(r.ms) + '</span>' +
+        '<span class="ex">' + esc(ex.join(' · ')) + '</span></div>';
+    }).join('')
+    : '<div class="secTip">还没有记录。跟着谱跑一会儿（超过 5 秒）就会自动记一笔。</div>';
+}
+
+/**
+ * 触发一个文本文件的下载。
+ * 优先 Blob + createObjectURL；某些宿主（jsdom / 受限 webview）没有该 API，
+ * 回落到 data URI，保证导出不会直接抛异常。
+ */
+function downloadText(text, filename, mime) {
+  try {
+    if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+      const url = URL.createObjectURL(new Blob([text], { type: mime }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      return true;
+    }
+  } catch (e) { /* 落到下面的 data URI 兜底 */ }
+  const a = document.createElement('a');
+  a.href = 'data:' + mime + ',' + encodeURIComponent(text);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  return false;
+}
+
+/** 导出 CSV（带 BOM，Excel 直接打开不乱码） */
+function exportPracticeCsv() {
+  const log = loadLog();
+  if (!log.length) { setHint('还没有练习记录可导出'); return; }
+  const rows = [['时间', '时长(分钟)', '循环次数', '速度', '段落', '结束小节']];
+  log.forEach((r) => {
+    const dt = new Date(r.d);
+    rows.push([
+      dt.toLocaleString(),
+      ((r.ms || 0) / 60000).toFixed(1),
+      r.loops || 0,
+      (r.rate || 1).toFixed(2) + 'x',
+      r.sec || '',
+      r.meas ? ('m' + r.meas) : '',
+    ]);
+  });
+  const csv = '\ufeff' + rows.map((a) => a.map((v) => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+  downloadText(csv, 'tabpilot-practice-' + dayKey(new Date()) + '.csv', 'text/csv;charset=utf-8');
+  setHint('已导出练习记录 CSV（' + log.length + ' 条）');
+}
+
+$('btnPractice').onclick = openPractice;
+$('pmClose').onclick = closePractice;
+$('practiceModal').onclick = (e) => { if (e.target.id === 'practiceModal') closePractice(); };
+$('pmExport').onclick = exportPracticeCsv;
+$('pmClear').onclick = () => {
+  if (!loadLog().length) { setHint('本来就没有记录'); return; }
+  saveLog([]);
+  renderPractice();
+  setHint('练习记录已清空');
+};
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('practiceModal').style.display === 'flex') closePractice();
+});
+
+/* 段落标记：在当前行打点（回车即可确认） */
+$('btnAddMark').onclick = () => {
+  addMarkAt(curPage, curBand >= 0 ? curBand : 0, $('markName').value);
+  $('markName').value = '';
+};
+$('markName').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('btnAddMark').click(); }
+});
+
 // 「更多」菜单：收纳低频操作（示例谱/节拍器/放大镜/行列表），降低工具栏密度
 const morePop = $('morePop');
 $('btnMore').onclick = (e) => {
@@ -1044,7 +1479,8 @@ document.addEventListener('click', (e) => {
   if (!morePop.contains(e.target)) morePop.classList.remove('open');
 });
 $('btnClear').onclick = () => {
-  pages = []; curPage = 0; bands = [];
+  pages = []; curPage = 0; bands = []; marks = [];
+  renderSections();
   stop();
   tabImg.removeAttribute('src');   // 清掉图上内容，回到空态引导
   barBox.style.display = 'none';
@@ -1131,6 +1567,7 @@ function tick() {
     elapsedBase = loopA;
     t0 = performance.now();
     t = loopA;
+    sessLoops++;   // 循环次数进练习记录
   }
   const loc = locate(t);
   if (!loc) return;
@@ -1153,6 +1590,7 @@ function showPosition(bandIdx, barIdx, p = 0) {
   if (!b) return;
   curBand = bandIdx;
   curBar = barIdx;
+  updateSecChip(curPage, bandIdx);
 
   /* 滚动模式：整谱长图 + 连续自动滚动，不翻页。
      覆盖层坐标需按本页显示缩放 s 换算（bands 存的是原始像素）。 */
@@ -1330,4 +1768,5 @@ window.addEventListener('DOMContentLoaded', () => {
   applySettings(window.TPSettings.all());
   layout();
   renderPageNav();
+  renderSections();
 });

@@ -12,7 +12,7 @@
 'use strict';
 
 /** 缓存版本号：改动外壳资源时必须递增 */
-const CACHE = 'tabpilot-v5';
+const CACHE = 'tabpilot-v6';
 
 /** 应用外壳：离线运行所需的最小资源集合 */
 const SHELL = [

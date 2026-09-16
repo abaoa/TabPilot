@@ -193,9 +193,77 @@ window.addEventListener('load', function () {
           ok('工程导出：谱行字段完整(x0/y0/x1/y1/bars)',
             out.pages[0].bands[0].x0 === 0 && out.pages[0].bands[0].y1 === 100 && out.pages[0].bands[0].bars === 3);
 
+          // ===== 新增：段落标记 =====
+          addMarkAt(0, 0, '主歌');
+          addMarkAt(1, 0, '副歌');
+          ok('段落标记：成功添加 2 个', marks.length === 2, 'n=' + marks.length);
+          ok('段落标记：按 (page,band) 升序存放',
+            marks[0].page === 0 && marks[0].band === 0 && marks[1].page === 1);
+          ok('段落时间：第 1 段起点 = 0', markTime(marks[0]) === 0, 't=' + markTime(marks[0]));
+          var pg0Dur = bandDur(pages[0].bands[0]) + bandDur(pages[0].bands[1]);
+          ok('段落时间：第 2 段起点 = 第 1 页总时长',
+            Math.abs(markTime(marks[1]) - pg0Dur) < 1,
+            't=' + markTime(marks[1]).toFixed(1) + ' 期望=' + pg0Dur.toFixed(1));
+          ok('段落时间：末段终点 = 全曲时长', Math.abs(markEnd(1) - totalDur()) < 1, 'end=' + markEnd(1).toFixed(1));
+          var mm0 = markMeasures(0);
+          ok('段落小节区间：第 1 段 m2–m8（startMeasure=2，第1页 3+4 小节）',
+            mm0[0] === 2 && mm0[1] === 8, JSON.stringify(mm0));
+          ok('段落归属：sectionOfPos(0,1) = 主歌', sectionOfPos(0, 1) === '主歌', String(sectionOfPos(0, 1)));
+          ok('段落归属：sectionOfPos(1,0) = 副歌', sectionOfPos(1, 0) === '副歌', String(sectionOfPos(1, 0)));
+          ok('段落归属：起点之前无段落', sectionOfPos(0, 0) === '主歌');
+
+          renderSections();
+          var secHtml = document.getElementById('sectionList').innerHTML;
+          ok('段落列表：渲染 2 项', document.querySelectorAll('#sectionList .secItem').length === 2,
+            'n=' + document.querySelectorAll('#sectionList .secItem').length);
+          ok('段落列表：含名称与小节区间', /主歌/.test(secHtml) && /m2/.test(secHtml));
+          drawBands();
+          ok('段落标记绘制到当前页覆盖层（只画当前页）',
+            document.querySelectorAll('#imgWrap .secTag').length === 1,
+            'n=' + document.querySelectorAll('#imgWrap .secTag').length);
+
+          loopMark(1);
+          ok('段落循环：A/B 设成该段区间并开启',
+            loopOn === true && loopA === markTime(marks[1]) && Math.abs(loopB - totalDur()) < 1,
+            'A=' + (loopA / 1000).toFixed(1) + 's B=' + (loopB / 1000).toFixed(1) + 's');
+          loopOn = false;
+
+          addMarkAt(0, 0, '前奏');
+          ok('同位置重复打标记 = 改名，不新增', marks.length === 2 && marks[0].name === '前奏',
+            'n=' + marks.length + ' name=' + marks[0].name);
+
+          // ===== 新增：练习记录 =====
+          try { localStorage.removeItem('tabpilot.practiceLog'); } catch (e) {}
+          sessMs = 0; sessStart = 0; sessLoops = 0;
+          sessMs = 42000; sessLoops = 3; curPage = 0; curBand = 0; curBar = 1;
+          finishPractice();
+          var lg = loadLog();
+          ok('练习记录：超过 5 秒写入一条', lg.length === 1, 'n=' + lg.length);
+          ok('练习记录：时长与循环次数正确',
+            !!lg[0] && lg[0].ms === 42000 && lg[0].loops === 3, lg[0] && JSON.stringify(lg[0]));
+          ok('练习记录：写入后会话归零', sessMs === 0 && sessLoops === 0);
+          sessMs = 1200; finishPractice();
+          ok('练习记录：不足 5 秒不计入', loadLog().length === 1, 'n=' + loadLog().length);
+
+          openPractice();
+          ok('练习面板：打开后可见', getComputedStyle(document.getElementById('practiceModal')).display !== 'none');
+          ok('练习面板：4 张统计卡', document.querySelectorAll('#pmStats .pm-stat').length === 4,
+            'n=' + document.querySelectorAll('#pmStats .pm-stat').length);
+          ok('练习面板：近 7 天柱状图 7 根', document.querySelectorAll('#pmChart .pm-col').length === 7,
+            'n=' + document.querySelectorAll('#pmChart .pm-col').length);
+          ok('练习面板：最近记录至少 1 条', document.querySelectorAll('#pmList .pm-row').length >= 1,
+            'n=' + document.querySelectorAll('#pmList .pm-row').length);
+          var csvOk = true;
+          try { exportPracticeCsv(); } catch (e) { csvOk = false; }
+          ok('练习记录：导出 CSV 不抛异常', csvOk);
+          closePractice();
+          ok('练习面板：关闭后隐藏', getComputedStyle(document.getElementById('practiceModal')).display === 'none');
+
           document.getElementById('btnClear').click();
           ok('清空后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');
           ok('清空后滚动视图无残留页', document.querySelectorAll('#scrollView .scrollPage').length === 0);
+          ok('清空后段落标记一并清除', marks.length === 0 && document.querySelectorAll('#sectionList .secItem').length === 0,
+            'marks=' + marks.length);
 
           var pre = document.createElement('pre');
           pre.id = 'VERIFY';

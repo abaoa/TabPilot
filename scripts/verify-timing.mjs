@@ -172,7 +172,7 @@ console.log('=== 演奏录音复盘核心检验 ===');
   ok('image-tab.html 复盘元素齐全', miss(img).length === 0, '缺=' + miss(img).join(','));
   ok('app.js 调用了 computeTimingDeviation', appjs.indexOf('computeTimingDeviation') >= 0);
   ok('image-tab.js 调用了 computeTimingDeviation', imgjs.indexOf('computeTimingDeviation') >= 0);
-  ok('sw.js 缓存版本已升到 v15', sw.indexOf('tabpilot-v15') >= 0);
+  ok('sw.js 缓存版本不低于 v16', +((sw.match(/tabpilot-v(\d+)/) || [0, 0])[1]) >= 16);
   ok('sw.js 预缓存含 timing-core.js', sw.indexOf("'js/timing-core.js'") >= 0);
 }
 

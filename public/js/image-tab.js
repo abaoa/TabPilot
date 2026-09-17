@@ -310,6 +310,8 @@ function loadImageData(src, current, name, preset) {
     h: 0,
     bands: Array.isArray(preset) ? preset.map((b) => ({
       x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, bars: b.bars,
+      sTop: b.sTop, sBot: b.sBot,
+      bounds: Array.isArray(b.bounds) ? b.bounds.slice() : null,
     })) : [],
   };
   pages.push(pg);
@@ -535,8 +537,12 @@ $('btnDetect').onclick = () => {
   pruneMarks();
   renderSections();
   renderBandList();
+  const hitBars = bands.filter((b) => b.bounds && b.bounds.length > 1).length;
   setLed('ok', '已识别 ' + bands.length + ' 行（第 ' + (curPage + 1) + ' 页）');
-  setHint('检查右侧行列表：可删除误检行、修改每行小节数，然后点「▶ 开始跟随」');
+  setHint('检查右侧行列表：可删除误检行、修改每行小节数，然后点「▶ 开始跟随」'
+    + (hitBars
+      ? '；其中 ' + hitBars + ' 行已检到小节线，跟随按实际小节宽度'
+      : '；未检到小节线的行按小节数均分，可点「🎼 小节线」重检'));
 };
 
 /**
@@ -624,22 +630,38 @@ function detectBands() {
     else fin.push(b);
   }
 
-  // ⑤ 逐行检测小节数
-  for (const b of fin) b.bars = detectBarCount(b, img);
+  // ⑤ 逐行检测小节线与小节边界
+  for (const b of fin) {
+    const r = detectBarBounds(b, img);
+    b.bars = r.bars;
+    b.bounds = r.bounds;                               // null 表示退回均分
+  }
   return fin;
 }
 
 /**
- * 检测某一行的小节数：在谱线高度范围内做垂直投影找竖线。
+ * 检测某一行的小节线，返回小节数与**真实像素边界**。
  * 判据：列暗像素覆盖 ≥88% 谱线高度，且谱线下沿外延伸 ≤9px
  * （音符符杆会明显伸出谱线外，小节线不会；据此排除符杆误检）。
+ *
+ * 候选列 → 竖线 → 边界 三步交给 BarlineCore（纯函数，可单测），
+ * 这里只负责取像素、算覆盖率、以及"排除符杆"这类图像专属判据。
+ *
+ * @returns {{bars:number, bounds:Array<number>|null}}
+ *   bounds 为升序边界数组（含行左右端点），小节数 = 长度 − 1；
+ *   检测不可信时返回 { bars: 4, bounds: null }，调用方按均分回退。
  */
-function detectBarCount(b, img) {
-  const top = b.sTop;
-  const bot = b.sBot;
+function detectBarBounds(b, img) {
+  // 自动识别的行自带谱线上下沿；手动框的行只有行框，需先估出谱线范围
+  const rg = (b.sTop != null && b.sBot != null)
+    ? { top: b.sTop, bot: b.sBot }
+    : estimateStaffRange(b, img);
+  const top = rg.top;
+  const bot = rg.bot;
   const h = bot - top + 1;
-  if (h < 10) return 4;
+  if (h < 10) return { bars: b.bars || 4, bounds: null };
 
+  const BC = window.BarlineCore;
   const cv = document.createElement('canvas');
   const m = 8;                                          // 上下留边，便于检测"延伸"
   cv.width = img.naturalWidth;
@@ -647,29 +669,34 @@ function detectBarCount(b, img) {
   const ctx = cv.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(img, 0, top - m, img.naturalWidth, cv.height, 0, 0, cv.width, cv.height);
   const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+  const W = cv.width;
 
-  // 每列在谱线范围内的暗像素覆盖率
-  const cov = new Float32Array(cv.width);
-  for (let x = 0; x < cv.width; x++) {
-    let c = 0;
-    for (let y = m; y < m + h; y++) {
-      const i = (y * cv.width + x) * 4;
-      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      if (lum < 170) c++;
-    }
-    cov[x] = c / h;
-  }
+  // 每列在谱线范围内的暗像素覆盖率（列投影）
+  const cov = BC
+    ? BC.columnProjection(d, W, cv.height, { x0: 0, y0: m, x1: W, y1: m + h }, 170)
+    : (function () {
+      const a = new Array(W);
+      for (let x = 0; x < W; x++) {
+        let c = 0;
+        for (let y = m; y < m + h; y++) {
+          const i = (y * W + x) * 4;
+          if (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2] < 170) c++;
+        }
+        a[x] = c / h;
+      }
+      return a;
+    })();
 
   // 亮度取值（越界按白处理）
   const LUM = (x, y) => {
-    if (x < 0 || x >= cv.width || y < 0 || y >= cv.height) return 255;
-    const i = (y * cv.width + x) * 4;
+    if (x < 0 || x >= W || y < 0 || y >= cv.height) return 255;
+    const i = (y * W + x) * 4;
     return 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
   };
 
   // 候选列：谱线内高覆盖且下方无明显延伸
-  const cand = new Uint8Array(cv.width);
-  for (let x = 0; x < cv.width; x++) {
+  const cand = new Uint8Array(W);
+  for (let x = 0; x < W; x++) {
     if (cov[x] < 0.88) continue;
     let tail = 0;
     for (let y = m + h + 1; y < m + h + 42; y++) {
@@ -679,31 +706,66 @@ function detectBarCount(b, img) {
     if (tail <= 9) cand[x] = 1;
   }
 
-  // 相邻候选列归为一根竖线；宽度 >5 的视为文字块，丢弃
-  const raw = [];
-  let x0 = -1;
-  for (let x = 0; x <= cv.width; x++) {
-    if (x < cv.width && cand[x]) {
-      if (x0 < 0) x0 = x;
-    } else if (x0 >= 0) {
-      if (x - x0 <= 5) raw.push(Math.round((x0 + x - 1) / 2));
-      x0 = -1;
-    }
-  }
-
-  // 合并 <20px 的相邻竖线（谱首括线、反复双竖线算一个边界）
-  const lines = [];
-  for (const x of raw) {
-    if (lines.length && x - lines[lines.length - 1] < 20) {
-      lines[lines.length - 1] = Math.round((lines[lines.length - 1] + x) / 2);
-    } else {
-      lines.push(x);
-    }
-  }
+  // 竖线提取：过宽视为文字块，过近的合并（谱首括线/反复双竖线算一个边界）
+  const lines = BC
+    ? BC.linesFromMask(cand, { maxRun: 5, mergeGap: 20 })
+    : (function () {
+      const raw = [];
+      let x0 = -1;
+      for (let x = 0; x <= W; x++) {
+        if (x < W && cand[x]) { if (x0 < 0) x0 = x; }
+        else if (x0 >= 0) { if (x - x0 <= 5) raw.push(Math.round((x0 + x - 1) / 2)); x0 = -1; }
+      }
+      const o = [];
+      for (const x of raw) {
+        if (o.length && x - o[o.length - 1] < 20) o[o.length - 1] = Math.round((o[o.length - 1] + x) / 2);
+        else o.push(x);
+      }
+      return o;
+    })();
 
   const inRange = lines.filter((x) => x >= b.x0 - 6 && x <= b.x1 + 6);
   const bars = inRange.length - 1;                       // n 条边界线 → n-1 个小节
-  return bars >= 1 && bars <= 16 ? bars : 4;
+  if (!(bars >= 1 && bars <= 16)) return { bars: b.bars || 4, bounds: null };
+
+  if (!BC) return { bars, bounds: null };
+  // 最小小节宽度：行宽的 1/24，避免把符杆残留切成碎片小节
+  const minW = Math.max(10, Math.round((b.x1 - b.x0) / 24));
+  const bounds = BC.barBounds(inRange, b.x0, b.x1, minW);
+  return (bounds && bounds.length >= 2) ? { bars: bounds.length - 1, bounds } : { bars, bounds: null };
+}
+
+/**
+ * 手动框的行只有行框，没有谱线上下沿。这里在该行内做**行投影**，
+ * 把覆盖 >50% 行宽的连续暗行（六线谱的谱线）找出来，取其上下沿。
+ * 找不到时退回行框内缩 15%（避开数字与和弦符号的干扰）。
+ */
+function estimateStaffRange(b, img) {
+  const y0 = Math.max(0, Math.round(b.y0));
+  const y1 = Math.min(img.naturalHeight, Math.round(b.y1));
+  const h = y1 - y0;
+  if (h < 10) return { top: y0, bot: y1 };
+  const W = Math.min(700, img.naturalWidth);
+  const s = W / img.naturalWidth;
+  const cv = document.createElement('canvas');
+  cv.width = W;
+  cv.height = Math.max(1, Math.round(h * s));
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, y0, img.naturalWidth, h, 0, 0, W, cv.height);
+  const d = ctx.getImageData(0, 0, W, cv.height).data;
+
+  let a = -1;
+  let z = -1;
+  for (let y = 0; y < cv.height; y++) {
+    let c = 0;
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      if (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2] < 170) c++;
+    }
+    if (c / W > 0.5) { if (a < 0) a = y; z = y; }
+  }
+  if (a < 0) return { top: y0 + Math.round(h * 0.15), bot: y1 - Math.round(h * 0.15) };
+  return { top: y0 + Math.round(a / s), bot: y0 + Math.round(z / s) };
 }
 
 /** 求某行区域内暗像素的水平范围（即谱线左右边界） */
@@ -776,6 +838,34 @@ tabImg.addEventListener('click', (e) => {
   }
 });
 
+/* ------------------------------------------------------------ 小节线重检测 */
+
+/**
+ * 对当前页已框好的每一行重新检测小节线。
+ * 用途：手动框的行、或自动识别后修过图的行，都能补上真实小节边界。
+ * 检测到的边界会覆盖该行的小节数（行数不变，只改行内切分）。
+ */
+$('btnBars').onclick = () => {
+  const pg = pages[curPage];
+  if (!pg || !pg.img.naturalWidth) { setHint('请先加载谱图'); return; }
+  if (!bands.length) { setHint('请先识别或手动框出谱行，再检测小节线'); return; }
+
+  let hit = 0;
+  for (const b of bands) {
+    const r = detectBarBounds(b, pg.img);
+    b.bars = r.bars;
+    b.bounds = r.bounds;
+    if (r.bounds) hit++;
+  }
+  renderBandList();
+  setLed(hit ? 'ok' : '', hit
+    ? ('小节线：' + hit + '/' + bands.length + ' 行按真实边界跟随')
+    : '未检到小节线（仍按小节数均分）');
+  setHint(hit
+    ? '已检到 ' + hit + ' 行的小节线，跟随框宽度改用实际小节宽度；其余行仍按小节数均分。'
+    : '没检到可信的小节线，已保留原小节数并继续按均分跟随。可先「🛠 修图」增强对比度再试。');
+};
+
 /* -------------------------------------------------------------- 谱行列表 UI */
 
 /** 渲染右侧谱行列表（可改小节数、删除、点击跳转） */
@@ -801,7 +891,9 @@ function renderBandList() {
 
   el.querySelectorAll('[data-bars]').forEach((inp) => {
     inp.onchange = () => {
-      bands[+inp.dataset.bars].bars = Math.max(1, Math.min(16, +inp.value || 4));
+      const bb = bands[+inp.dataset.bars];
+      bb.bars = Math.max(1, Math.min(16, +inp.value || 4));
+      bb.bounds = null;                                  // 手改小节数 → 退回均分跟随
       drawBands();
     };
   });
@@ -1375,7 +1467,11 @@ function buildProject() {
     marks: marks.map((m) => ({ page: m.page, band: m.band, name: m.name, color: m.color })),
     pages: pages.map((p) => ({
       src: p.src,
-      bands: p.bands.map((b) => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, bars: b.bars })),
+      bands: p.bands.map((b) => ({
+        x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, bars: b.bars,
+        sTop: b.sTop, sBot: b.sBot,
+        bounds: Array.isArray(b.bounds) ? b.bounds.slice() : null,
+      })),
     })),
   };
 }
@@ -3764,8 +3860,11 @@ function showPosition(bandIdx, barIdx, p = 0) {
     if (!ov) return;
     attachPlayhead(ov);
 
-    const ws = (b.x1 - b.x0) / b.bars;
-    const xs = b.x0 + barIdx * ws;
+    // 行级跟随优先用检测到的真实小节边界，无边界时退回均分
+    const seg = (window.BarlineCore ? window.BarlineCore.barBoundsAt(b.bounds, barIdx) : null)
+      || { a: b.x0 + barIdx * ((b.x1 - b.x0) / b.bars), b: b.x0 + (barIdx + 1) * ((b.x1 - b.x0) / b.bars) };
+    const xs = seg.a;
+    const ws = Math.max(1, seg.b - seg.a);
 
     barBox.style.display = 'block';
     barBox.style.left = (xs * s) + 'px';
@@ -3808,9 +3907,11 @@ function showPosition(bandIdx, barIdx, p = 0) {
 
   if (!tabImg.naturalWidth) return;   // 正在翻页、图片尚未就绪时跳过本帧绘制
 
-  // 小节框：行内按小节数均分
-  const w = (b.x1 - b.x0) / b.bars;
-  const x = b.x0 + barIdx * w;
+  // 小节框：优先用检测到的真实边界，无边界时退回均分
+  const seg2 = (window.BarlineCore ? window.BarlineCore.barBoundsAt(b.bounds, barIdx) : null)
+    || { a: b.x0 + barIdx * ((b.x1 - b.x0) / b.bars), b: b.x0 + (barIdx + 1) * ((b.x1 - b.x0) / b.bars) };
+  const w = Math.max(1, seg2.b - seg2.a);
+  const x = seg2.a;
   barBox.style.display = 'block';
   barBox.style.left = x + 'px';
   barBox.style.top = b.y0 + 'px';

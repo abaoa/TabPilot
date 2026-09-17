@@ -21,7 +21,8 @@
   "verify:align": "node scripts/verify-align.mjs",
   "verify:render": "node scripts/verify-render.mjs",
   "verify:chord": "node scripts/verify-chord.mjs",
-  "verify:timing": "node scripts/verify-timing.mjs"
+  "verify:timing": "node scripts/verify-timing.mjs",
+  "verify:barline": "node scripts/verify-barline.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

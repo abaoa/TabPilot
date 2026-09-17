@@ -541,6 +541,7 @@
     <span class="lbl" id="followStatus" title="跟奏状态：绿=已锁定，黄=跟丢退回节拍滚动">
       <span class="led" id="followLed"></span><span id="followStateText">未跟奏</span>
     </span>
+    <span class="chip" id="chordChip" style="display:none" title="跟奏时实时识别你弹/唱的和弦">和弦 <b id="chordImg">—</b> <span class="led" id="chordLedImg"></span></span>
     <span class="lbl" id="offsetWrap" style="display:none" title="伴奏比视觉提前/滞后的毫秒数，正数表示音频延后">
       偏移<input id="audioOffset" type="number" value="0" step="50" min="-3000" max="3000" aria-label="音画偏移毫秒">ms
     </span>
@@ -568,6 +569,7 @@
 </footer>
 
 <script src="js/settings.js"></script>
+<script src="js/chord-core.js"></script>
 <script src="js/image-tab.js"></script>
 <script>
   'use strict';

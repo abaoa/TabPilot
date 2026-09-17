@@ -98,6 +98,13 @@
       <input id="loopStopAfter" type="number" value="0" min="0" max="99" step="1" title="循环次数上限，0=不限" style="width:46px"> 次
       <span class="chip" id="loopChip" style="display:none">A/B <b id="loopRange">-</b></span>
     </div>
+
+    <div class="group">
+      <span class="glabel">和弦跟随</span>
+      <span class="chip">谱面 <b id="chordExpect">—</b></span>
+      <span class="chip">你弹 <b id="chordLive">—</b></span>
+      <span class="led" id="chordLed" title="和弦匹配状态：绿=对上 红=弹错 灰=静音"></span>
+    </div>
   </div>
 </header>
 
@@ -125,6 +132,7 @@
 
 <script src="vendor/alphaTab.js"></script>
 <script src="js/settings.js"></script>
+<script src="js/chord-core.js"></script>
 <script src="js/app.js"></script>
 <script>
   'use strict';

@@ -2465,6 +2465,7 @@ async function startFollow() {
   followState = 'track'; followGoodStreak = 0; followBadStreak = 0;
   setFollowLed('track');
   if ($('btnFollow')) $('btnFollow').classList.add('active');
+  if ($('chordChip')) $('chordChip').style.display = '';
   setHint('跟奏已开启：播放头会跟随你实际弹/听的位置自动移动（再点一次可关闭）');
   followTick();
 }
@@ -2504,7 +2505,42 @@ function followTick() {
       }
     }
   }
+  // Feature 21：图片谱实时和弦识别（你弹/唱的和弦名）
+  if (window.ChordCore && $('chordImg')) {
+    const ch = liveChroma();
+    const det = ch ? window.ChordCore.chordDetect(ch) : null;
+    $('chordImg').textContent = det ? det.name : '—';
+    const led = $('chordLedImg');
+    if (led) led.className = 'led' + (det && !det.uncertain ? ' ok' : '');
+  }
+
   followTimer = setTimeout(followTick, FOLLOW_TICK_MS);
+}
+
+/** 从跟奏分析器取当前帧色度向量（与 app.js 的 micChroma 同口径） */
+function liveChroma() {
+  if (!followAnalyser) return null;
+  const n = followAnalyser.frequencyBinCount;
+  const fbuf = new Float32Array(n);
+  followAnalyser.getFloatFrequencyData(fbuf);
+  const ctx = followAnalyser.context;
+  const sr = ctx && ctx.sampleRate ? ctx.sampleRate : 44100;
+  const binHz = sr / (n * 2);          // fftSize = frequencyBinCount * 2
+  const c = new Float32Array(12);
+  let peakDb = -Infinity;
+  for (let k = 2; k < n; k++) {
+    const db = fbuf[k];
+    if (!isFinite(db) || db < -90) continue;
+    const f = k * binHz;
+    if (f < 75 || f > 1400) continue;
+    if (db > peakDb) peakDb = db;
+    const midi = 69 + 12 * Math.log2(f / 440);
+    const pc = ((Math.round(midi) % 12) + 12) % 12;
+    c[pc] += Math.pow(10, (db + 72) / 20);
+  }
+  let s = 0; for (const v of c) s += v * v;
+  if (s <= 0) return null;
+  return c;
 }
 
 function stopFollow() {
@@ -2514,6 +2550,8 @@ function stopFollow() {
   if (followStream) { followStream.getTracks().forEach((t) => t.stop()); followStream = null; }
   followAnalyser = null; liveEnv = []; followRef = null;
   if ($('btnFollow')) $('btnFollow').classList.remove('active');
+  if ($('chordChip')) $('chordChip').style.display = 'none';
+  if ($('chordImg')) $('chordImg').textContent = '—';
   setFollowLed('off');
   setHint('跟奏已关闭');
 }

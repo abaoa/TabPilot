@@ -400,6 +400,49 @@ function highlightIndex(i) {
   $('barNum').textContent = bar;
 
   try { highlightDom(b); } catch (e) { /* 渲染未就绪时忽略 */ }
+
+  setChordExpect(i);                 // Feature 21：同步更新「谱面当前和弦」显示
+}
+
+/* ------------------------------------------------------ Feature 21：和弦级跟随 */
+
+/** 安全调用共享和弦识别核心（chord-core.js 提供） */
+function detectChord(chroma) {
+  if (!window.ChordCore || !chroma) return null;
+  try { return window.ChordCore.chordDetect(chroma); } catch (e) { return null; }
+}
+
+let chordExpectCache = null;         // 当前播放头处谱面期望和弦
+
+/** 更新「谱面：X」显示（由 highlightIndex 在播放/跟随时调用） */
+function setChordExpect(i) {
+  const el = $('chordExpect');
+  if (!el) return;
+  const ch = (ref.chroma && ref.chroma[i]) ? detectChord(ref.chroma[i]) : null;
+  chordExpectCache = ch;
+  el.textContent = ch ? ch.name : '—';
+}
+
+/** 更新「你弹：Y」与匹配灯；liveChroma 为 null 时清成待机 */
+function updateChordReadout(liveChroma) {
+  const liveEl = $('chordLive');
+  const led = $('chordLed');
+  if (liveChroma) {
+    const live = detectChord(liveChroma);
+    if (liveEl) liveEl.textContent = live ? live.name : '—';
+    if (led) {
+      if (!live || live.uncertain) led.className = 'led';
+      else if (!chordExpectCache) led.className = 'led warn';
+      else if (live.root === chordExpectCache.root && live.type === chordExpectCache.type) led.className = 'led ok';
+      else led.className = 'led bad';
+      led.title = live
+        ? ('你弹：' + live.name + (chordExpectCache ? ' ｜ 谱面：' + chordExpectCache.name : ''))
+        : '';
+    }
+  } else {
+    if (liveEl) liveEl.textContent = '—';
+    if (led) led.className = 'led';
+  }
 }
 
 /** 音符级红色高亮（锚定 alphaTab 渲染出的 <g class="bN"> 节点） */
@@ -790,6 +833,9 @@ class Follower {
     setConf(this.smoothed);
     const sf = this.source.speedFactor ? this.source.speedFactor() : null;
     $('speedVal').textContent = sf ? sf.toFixed(2) + 'x' : '-';
+
+    // Feature 21：实时和弦跟随（你弹/唱的和弦 vs 谱面）
+    updateChordReadout(silence ? null : c);
   }
 
   /** 跳转到第 i 拍 */

@@ -4,6 +4,7 @@
  * 纯函数，脱离 DOM 也能测：
  *   image-tab.js: followStateMachine（Feature 18：跟奏状态机，绿/黄切换）
  *   app.js:        soundingKeyPc / rotateChroma（Feature 19：变调夹音高）
+ *   app.js:        wrapLoopTime / loopBeatIndex（Feature 20：乐句循环 A/B 回绕）
  *
  * 运行：npm run verify:render
  * ========================================================================== */
@@ -113,6 +114,36 @@ ok('rotateChroma 保持长度 12 且能量守恒', rot.length === 12 && Math.abs
 // 环绕旋转 12 = 不变
 let rot12 = rotateChroma(unit, 12);
 ok('rotate 12 = 不变', rot12[0] === 1);
+
+console.log('\n[Feature 20] 乐句循环：wrapLoopTime / loopBeatIndex');
+const wrapLoopTime = new Function(
+  extract(appSrc, 'wrapLoopTime') + '\nreturn wrapLoopTime;'
+)();
+const loopBeatIndex = new Function(
+  extract(appSrc, 'loopBeatIndex') + '\nreturn loopBeatIndex;'
+)();
+ok('函数已抽取：wrapLoopTime / loopBeatIndex',
+  typeof wrapLoopTime === 'function' && typeof loopBeatIndex === 'function');
+
+// 区间外时间绕回区间内对应位置：t=12s, A=5s, B=10s → 5+(12-5)%5=7s
+ok('越过 B 绕回区间内（12s→7s）', wrapLoopTime(12000, 5000, 10000) === 7000);
+// 恰在 A
+ok('恰在 A 不变', wrapLoopTime(5000, 5000, 10000) === 5000);
+// 区间内不变
+ok('区间内不变（7s）', wrapLoopTime(7000, 5000, 10000) === 7000);
+// 远超 B（多绕一圈仍正确）：t=22s → 5+(22-5)%5=5+17%5=5+2=7s
+ok('多绕一圈仍正确（22s→7s）', wrapLoopTime(22000, 5000, 10000) === 7000);
+// 非法区间（B<=A 或端点空）→ 原样返回
+ok('B<=A 时原样返回', wrapLoopTime(12000, 9000, 5000) === 12000);
+ok('端点为空时原样返回', wrapLoopTime(12000, null, 10000) === 12000);
+
+// loopBeatIndex：升序时间表找“≤tgt”的最大下标
+const times = [0, 500, 1000, 1500, 2000, 2500];
+ok('tgt 恰为某拍 → 该下标', loopBeatIndex(times, 1500) === 3);
+ok('tgt 在两拍之间 → 前一拍', loopBeatIndex(times, 1700) === 3);
+ok('tgt 早于首拍 → 0', loopBeatIndex(times, -100) === 0);
+ok('tgt 晚于末拍 → 末下标', loopBeatIndex(times, 99999) === 5);
+ok('空表 → 0', loopBeatIndex([], 1234) === 0);
 
 console.log(`\n断言汇总：通过 ${pass} / 失败 ${fail}`);
 if (fail > 0) { console.error('有失败用例'); process.exit(1); }

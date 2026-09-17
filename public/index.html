@@ -89,6 +89,15 @@
       <button class="btn" id="btnCapoUp" title="升一品" aria-label="升一品">+</button>
       <button class="btn" id="btnCapoReset" title="取下变调夹" aria-label="取下变调夹">⟲ 无夹</button>
     </div>
+
+    <div class="group">
+      <span class="glabel">循环</span>
+      <button class="btn" id="btnLoop" title="开启后播到 B 会自动回到 A 反复练">🔁 循环</button>
+      <button class="btn sm" id="btnLoopA" title="把当前播放头设为循环起点 A">ⓐ</button>
+      <button class="btn sm" id="btnLoopB" title="把当前播放头设为循环终点 B">ⓑ</button>
+      <input id="loopStopAfter" type="number" value="0" min="0" max="99" step="1" title="循环次数上限，0=不限" style="width:46px"> 次
+      <span class="chip" id="loopChip" style="display:none">A/B <b id="loopRange">-</b></span>
+    </div>
   </div>
 </header>
 

@@ -84,6 +84,72 @@ let magOn = false;
 let transpose = 0;
 /** 变调夹品数（0 – 11），0 = 无夹。夹上后实际发声比谱面高 capo 半音，但显示指法不变 */
 let capo = 0;
+/** A/B 循环（乐句循环练习）：loopA/loopB 为音乐时间(ms)；loopStopAfter>0 表示循环够次数自动停止 */
+let loopOn = false;
+let loopA = null;
+let loopB = null;
+let loopStopAfter = 0;
+let loopCount = 0;
+
+/**
+ * 把时间 t 回绕进 [loopA, loopB) 区间（仅当循环有效时）。
+ * 纯函数，便于单测；循环区间外的时间会被映射回区间内对应位置。
+ * @returns {number} 回绕后的时间
+ */
+function wrapLoopTime(t, a, b) {
+  if (a == null || b == null || b <= a) return t;
+  const span = b - a;
+  return a + (((t - a) % span) + span) % span;
+}
+
+/**
+ * 找到时间轴 times 中“时间 ≤ tgt”的最大下标（用于把循环端点映射到最近拍）。
+ * 纯函数，便于单测。times 必须升序。
+ * @returns {number} 下标，tgt 早于首拍时返回 0
+ */
+function loopBeatIndex(times, tgt) {
+  if (!times || !times.length) return 0;
+  let lo = 0;
+  let hi = times.length - 1;
+  let ans = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] <= tgt) { ans = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return ans;
+}
+
+/** 循环是否可有效工作：开关开 + A/B 都已设点 + B 在 A 之后 */
+function isLooping() {
+  return loopOn && loopA != null && loopB != null && loopB > loopA;
+}
+
+/** 当前播放头所处音乐时间(ms)，供「设 A / 设 B」读取；未播放时返回 0 */
+function playheadMs() {
+  if (engine && engine.name === 'walker' && walkerInst) {
+    return ((performance.now() - walkerInst.t0) / 1000) * walkerInst.rate * 1000;
+  }
+  if (engine && (engine.name === 'mic' || engine.name === 'sim') && typeof engine.idx === 'function') {
+    return ref.times[engine.idx()] || 0;
+  }
+  return 0;
+}
+
+/** 根据当前 A/B 更新底部区间提示 */
+function refreshLoopChip() {
+  const chip = $('loopChip');
+  const rng = $('loopRange');
+  if (!chip || !rng) return;
+  const show = (loopA != null || loopB != null);
+  chip.style.display = show ? '' : 'none';
+  if (show) {
+    rng.textContent = (loopA != null ? (loopA / 1000).toFixed(1) + 's' : '?')
+      + ' → ' + (loopB != null ? (loopB / 1000).toFixed(1) + 's' : '?');
+  }
+  const btn = $('btnLoop');
+  if (btn) btn.classList.toggle('active', loopOn);
+}
 
 /* ------------------------------------------------------------ alphaTab 初始化 */
 
@@ -434,7 +500,18 @@ class Walker {
   start() {
     this.t0 = performance.now();
     const loop = () => {
-      const t = ((performance.now() - this.t0) / 1000) * this.rate * 1000;
+      let t = ((performance.now() - this.t0) / 1000) * this.rate * 1000;
+      // A/B 循环：越过终点后无缝回到起点反复练
+      if (isLooping() && t >= loopB) {
+        loopCount++;
+        t = loopA;
+        this.t0 = performance.now() - loopA / this.rate;   // 让下一帧 t 从 A 起算
+        if (loopStopAfter > 0 && loopCount >= loopStopAfter) {
+          stopEngine();
+          setHint('已循环 ' + loopCount + ' 次，自动停止。');
+          return;
+        }
+      }
       let i = Math.max(0, this.lastIdx);
       while (i + 1 < ref.times.length && ref.times[i + 1] <= t) i++;
       while (i > 0 && ref.times[i] > t) i--;
@@ -696,6 +773,20 @@ class Follower {
       highlightIndex(this.idx);
     }
 
+    // A/B 循环（跟随模式下按当前拍时间判断是否越过 B）
+    if (isLooping()) {
+      const curT = ref.times[this.idx] || 0;
+      if (curT >= loopB) {
+        loopCount++;
+        this.seek(loopBeatIndex(ref.times, loopA));
+        if (loopStopAfter > 0 && loopCount >= loopStopAfter) {
+          stopEngine();
+          setHint('已循环 ' + loopCount + ' 次，自动停止。');
+          return;
+        }
+      }
+    }
+
     setConf(this.smoothed);
     const sf = this.source.speedFactor ? this.source.speedFactor() : null;
     $('speedVal').textContent = sf ? sf.toFixed(2) + 'x' : '-';
@@ -791,7 +882,7 @@ function runSim() {
 
   const src = new SimSource();
   const f = new Follower(src);
-  engine = { stop: () => f.stop(), name: 'sim', seek: (i) => f.seek(i) };
+  engine = { stop: () => f.stop(), name: 'sim', seek: (i) => f.seek(i), idx: () => f.idx };
   setLed('ok', '模拟演奏跟随中（含错音/变速注入）');
   setHint('演示模式：虚拟演奏者以 0.6x~1.45x 随机变速弹奏，8% 概率弹错音');
   syncButtons('btnSim');
@@ -981,6 +1072,41 @@ function bindUI() {
   $('btnCapoUp').onclick = () => setCapo(capo + 1);
   $('btnCapoDown').onclick = () => setCapo(capo - 1);
   $('btnCapoReset').onclick = () => setCapo(0);
+
+  // A/B 循环（乐句循环练习）
+  $('btnLoop').onclick = () => {
+    loopOn = !loopOn;
+    if (loopOn && !isLooping()) {
+      setHint('循环已开：还没设 A/B，先点 ⓐ/ⓑ 取当前播放头位置。');
+    } else if (loopOn) {
+      loopCount = 0;
+      setHint('循环已开：播到 B 会自动回到 A 反复练。');
+    } else {
+      setHint('循环已关。');
+    }
+    refreshLoopChip();
+  };
+  $('btnLoopA').onclick = () => {
+    loopA = playheadMs();
+    if (loopB != null && loopB <= loopA) loopB = null;   // 防 B 不在 A 之后
+    if (isLooping()) { loopOn = true; loopCount = 0; }
+    setHint('循环起点 A = ' + (loopA / 1000).toFixed(1) + 's（当前播放头）');
+    refreshLoopChip();
+  };
+  $('btnLoopB').onclick = () => {
+    loopB = playheadMs();
+    if (loopA != null && loopB <= loopA) loopA = null;   // 防 A 不在 B 之前
+    if (isLooping()) { loopOn = true; loopCount = 0; }
+    setHint('循环终点 B = ' + (loopB / 1000).toFixed(1) + 's（当前播放头）');
+    refreshLoopChip();
+  };
+  const stopAfter = $('loopStopAfter');
+  if (stopAfter) {
+    stopAfter.onchange = (e) => {
+      loopStopAfter = parseInt(e.target.value, 10) || 0;
+      loopCount = 0;
+    };
+  }
   // 键盘 [ / ] 快速升降半音（焦点在输入控件里时不抢按键）
   document.addEventListener('keydown', (e) => {
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;

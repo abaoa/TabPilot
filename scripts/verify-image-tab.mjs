@@ -497,6 +497,10 @@ window.addEventListener('load', function () {
                 typeof alignOffsetSeconds === 'function' && typeof findPosition === 'function');
               ok('对齐：按钮 btnAlign / btnFollow 存在于页面',
                 !!document.getElementById('btnAlign') && !!document.getElementById('btnFollow'));
+              ok('Feature18：跟奏状态灯 followLed / followStatus 已就位',
+                !!document.getElementById('followLed') && !!document.getElementById('followStatus'));
+              ok('Feature18：纯函数 followStateMachine 存在且默认 off',
+                typeof followStateMachine === 'function' && followStateMachine('off', 0.9, 0, 0).state === 'off');
 
               document.getElementById('btnClear').click();
               ok('清空后回到空态引导', pages.length === 0 && getComputedStyle(document.getElementById('stageEmpty')).display !== 'none');

@@ -2330,6 +2330,9 @@ function syncAudioRate() {
  * 麦克风对齐（Feature 16 / 17）
  * ====================================================================== */
 const FOLLOW_TICK_MS = 100;   // 跟奏采样周期（ms）
+const FOLLOW_LOCK = 0.4;      // 判定"跟上了"的匹配分阈值
+const FOLLOW_DEGRADE_TICKS = 12;  // 连续 ~1.2s 低于阈值 → 切到节拍级兜底
+const FOLLOW_RECOVER_TICKS = 5;   // 连续 ~0.5s 高于阈值 → 恢复跟奏
 
 let aligning = false;         // 校准进行中
 let followOn = false;         // 跟奏开关
@@ -2338,6 +2341,9 @@ let followAnalyser = null;    // AnalyserNode
 let followTimer = null;       // 轮询定时器
 let liveEnv = [];             // 实时包络（每 tick 一个 RMS，约 100ms/点）
 let followRef = null;         // 伴奏粗化包络（与 liveEnv 同分辨率）
+let followGoodStreak = 0;     // 连续高匹配 tick 数
+let followBadStreak = 0;      // 连续低匹配 tick 数
+let followState = 'off';      // 'off' | 'track' | 'degrade'
 
 /** 把伴奏降采样+包络，再粗化到 FOLLOW_TICK_MS 分辨率，作为跟奏的参考 */
 function buildFollowRef() {
@@ -2409,6 +2415,33 @@ async function calibrateOffset() {
   }
 }
 
+/**
+ * 跟奏状态机（纯函数，verify:render 单测）：根据当前匹配分与连续命中/丢失计数，
+ * 决定下一边界状态。'track' = 跟上了（绿），'degrade' = 跟丢后退回节拍级兜底滚动（黄）。
+ * 返回新的 { state, good, bad }，调用方就地覆盖即可。
+ */
+function followStateMachine(state, score, good, bad) {
+  let ng = good, nb = bad;
+  if (score >= FOLLOW_LOCK) { ng = good + 1; nb = 0; }
+  else { nb = bad + 1; ng = 0; }
+  let ns = state;
+  if (state === 'degrade') {
+    if (ng >= FOLLOW_RECOVER_TICKS) ns = 'track';
+  } else if (nb >= FOLLOW_DEGRADE_TICKS) {
+    ns = 'degrade';
+  }
+  return { state: ns, good: ng, bad: nb };
+}
+
+/** 把跟奏状态反映到状态灯：track=绿 / degrade=黄 / off=灰 */
+function setFollowLed(state) {
+  const el = $('followLed');
+  if (!el) return;
+  el.className = 'led' + (state === 'track' ? ' ok' : state === 'degrade' ? ' warn' : '');
+  const t = $('followStateText');
+  if (t) t.textContent = state === 'track' ? '跟奏中' : state === 'degrade' ? '降级·节拍滚动' : '未跟奏';
+}
+
 /** Feature 17：开启麦克风实时跟奏 */
 async function startFollow() {
   if (!audioBuf) { setHint('请先导入伴奏再开启跟奏'); return; }
@@ -2429,6 +2462,8 @@ async function startFollow() {
   followRef = buildFollowRef();
   liveEnv = [];
   followOn = true;
+  followState = 'track'; followGoodStreak = 0; followBadStreak = 0;
+  setFollowLed('track');
   if ($('btnFollow')) $('btnFollow').classList.add('active');
   setHint('跟奏已开启：播放头会跟随你实际弹/听的位置自动移动（再点一次可关闭）');
   followTick();
@@ -2448,7 +2483,20 @@ function followTick() {
     const around = Math.round(curTime() / 1000 / (FOLLOW_TICK_MS / 1000));
     const winFrames = Math.round(2 / (FOLLOW_TICK_MS / 1000));
     const { pos, score } = findPosition(followRef, win, around, winFrames);
-    if (score > 0.4) {
+    const next = followStateMachine(followState === 'off' ? 'track' : followState, score,
+      followGoodStreak, followBadStreak);
+    followState = next.state; followGoodStreak = next.good; followBadStreak = next.bad;
+    setFollowLed(followState);
+    if (followState === 'degrade') {
+      // 跟丢了：不再用麦克风位置硬拽播放头，退回 BPM 自动滚动（已有的播放循环即节拍级兜底）
+      if ($('followStateText') && $('followStateText').dataset.warned !== '1') {
+        setHint('跟奏暂时跟丢了，已切回节拍滚动；继续弹/听，锁定后会自动恢复');
+        $('followStateText').dataset.warned = '1';
+      }
+    } else if ($('followStateText')) {
+      $('followStateText').dataset.warned = '';
+    }
+    if (followState === 'track' && score > 0.4) {
       const newMs = pos * FOLLOW_TICK_MS;
       if (Math.abs(newMs - curTime()) > 250) {
         if (playing || paused) startAtTime(newMs);
@@ -2461,10 +2509,12 @@ function followTick() {
 
 function stopFollow() {
   followOn = false;
+  followState = 'off'; followGoodStreak = 0; followBadStreak = 0;
   if (followTimer) { clearTimeout(followTimer); followTimer = null; }
   if (followStream) { followStream.getTracks().forEach((t) => t.stop()); followStream = null; }
   followAnalyser = null; liveEnv = []; followRef = null;
   if ($('btnFollow')) $('btnFollow').classList.remove('active');
+  setFollowLed('off');
   setHint('跟奏已关闭');
 }
 

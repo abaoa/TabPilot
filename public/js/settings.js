@@ -37,6 +37,7 @@ window.TPSettings = (function () {
     startMeasure: 1,    // 图片谱：全局起始小节号（影响谱行旁的小节标注）
     viewMode: 'flip',   // 图片谱视图：翻页 flip | 滚动 scroll（整谱纵向长图自动滚动）
     transpose: 0,       // 谱面模式：移调半音数（-12 – +12，0 = 原调）
+    capo: 0,             // 谱面模式：变调夹品数（0 – 11，0 = 无夹）
   };
 
   var state = load();

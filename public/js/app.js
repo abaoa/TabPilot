@@ -82,12 +82,15 @@ let hlEl = null;
 let magOn = false;
 /** 移调半音数（-12 – +12），0 = 原调 */
 let transpose = 0;
+/** 变调夹品数（0 – 11），0 = 无夹。夹上后实际发声比谱面高 capo 半音，但显示指法不变 */
+let capo = 0;
 
 /* ------------------------------------------------------------ alphaTab 初始化 */
 
 /** 初始化 alphaTab 并载入默认演示曲 */
 function initTab() {
   transpose = clampTranspose(window.TPSettings.get('transpose'));
+  capo = Math.max(0, Math.min(11, Math.round(Number(window.TPSettings.get('capo')) || 0)));
   if (!window.alphaTab) {
     showFallback('alphaTab 脚本加载失败，请确认 vendor/alphaTab.js 存在后刷新页面。');
     return;
@@ -269,7 +272,8 @@ function buildReference(score) {
     const times = [];
     for (const b of beats) {
       times.push(b._timeMs);
-      chroma.push(beatChroma(b));
+      // 变调夹会让实际发声升高 capo 半音，参考轨道必须同步旋转，否则跟奏判错
+      chroma.push(rotateChroma(beatChroma(b), capo));
     }
 
     ref = { beats, barStartMs, chroma, times, barCount: mbs.length };
@@ -830,6 +834,19 @@ function scoreKey() {
   } catch (e) { return 0; }
 }
 
+/** 把 12 维色度向量整体旋转 semis 个半音（变调夹/移调都会用到），纯函数 */
+function rotateChroma(chroma, semis) {
+  const n = ((semis % 12) + 12) % 12;
+  const out = new Float32Array(12);
+  for (let i = 0; i < 12; i++) out[(i + n) % 12] = chroma[i];
+  return out;
+}
+
+/** 实际发声主音（十二音筒位置）= 谱面调 + 移调 + 变调夹。纯函数，verify:render 单测 */
+function soundingKeyPc(writtenPc, transposeSemis, capoSemis) {
+  return ((writtenPc + (transposeSemis || 0) + (capoSemis || 0)) % 12 + 12) % 12;
+}
+
 /**
  * 把移调量直接写进 score 模型。
  *
@@ -877,28 +894,54 @@ function setTranspose(n) {
     : ('已移调 ' + (transpose > 0 ? '+' : '') + transpose + ' 半音（' + intervalName(transpose) + '）'));
 }
 
+/**
+ * 设置变调夹品数（0–11）。变调夹只抬高"实际发声"与 OTW 参考轨道，不改变屏幕上显示的把位指法
+ * （你仍照谱上的形状弹，夹上后整体升 capo 半音）——这正是真实变调夹的语义。
+ */
+function setCapo(n) {
+  capo = Math.max(0, Math.min(11, Math.round(Number(n) || 0)));
+  window.TPSettings.set('capo', capo);
+  if (api && api.score) {
+    stopEngine();
+    buildReference(api.score);   // 参考轨道按新 capo 旋转，显示/发声维持 transpose 不变
+  }
+  updateTransposeUI();
+  setHint(capo === 0
+    ? '已取下变调夹'
+    : ('变调夹夹在第 ' + capo + ' 品：实际发声升高 ' + capo + ' 半音（指法显示不变）'));
+}
+
 function intervalName(n) { return INTERVALS[Math.min(12, Math.abs(n))]; }
 
-/** 更新工具条数值与底部的「原调 X → Y」提示 */
+/** 更新工具条数值与底部的「原调 X → Y（变调夹→实际 Z）」提示 */
 function updateTransposeUI() {
   const el = $('trVal');
   if (!el) return;
   const n = transpose;
   el.textContent = n === 0 ? '原调' : (n > 0 ? '+' + n : String(n));
 
+  const cv = $('capoVal');
+  if (cv) cv.textContent = capo === 0 ? '无' : ('第 ' + capo + ' 品');
+
   const ks = scoreKey();
   const from = keyPc(ks);
-  const to = ((from + n) % 12 + 12) % 12;
+  const shapePc = ((from + n) % 12 + 12) % 12;             // 屏幕上显示的把位调（= 原调 + 移调）
+  const soundPc = soundingKeyPc(from, n, capo);            // 实际发声调（再叠加变调夹）
   // 降号调（F / Bb / Eb …）读成降号名更自然，升号调反之
   const origName = (ks < 0 ? PC_FLAT : PC_SHARP)[from];
-  const newName = (n >= 0 ? PC_SHARP : PC_FLAT)[to];
+  const shapeName = (n >= 0 ? PC_SHARP : PC_FLAT)[shapePc];
+  const soundName = (capo >= 0 ? PC_SHARP : PC_FLAT)[soundPc];
   const kv = $('keyVal');
   if (kv) {
-    kv.textContent = n === 0
+    let base = n === 0
       ? ('原调 ' + origName)
-      : ((n > 0 ? '+' + n : n) + '（' + intervalName(n) + '）' + origName + '→' + newName);
+      : ((n > 0 ? '+' + n : n) + '（' + intervalName(n) + '）' + origName + '→' + shapeName);
+    if (capo > 0) base += ' ｜实际 ' + soundName;
+    kv.textContent = base;
   }
   $('btnTrReset').classList.toggle('active', n !== 0);
+  const cr = $('btnCapoReset');
+  if (cr) cr.classList.toggle('active', capo !== 0);
 }
 
 /* -------------------------------------------------------------------- UI */
@@ -935,6 +978,9 @@ function bindUI() {
   $('btnTrUp').onclick = () => setTranspose(transpose + 1);
   $('btnTrDown').onclick = () => setTranspose(transpose - 1);
   $('btnTrReset').onclick = () => setTranspose(0);
+  $('btnCapoUp').onclick = () => setCapo(capo + 1);
+  $('btnCapoDown').onclick = () => setCapo(capo - 1);
+  $('btnCapoReset').onclick = () => setCapo(0);
   // 键盘 [ / ] 快速升降半音（焦点在输入控件里时不抢按键）
   document.addEventListener('keydown', (e) => {
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;

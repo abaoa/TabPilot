@@ -18,7 +18,8 @@
   "verify:bpm": "node scripts/verify-bpm.mjs",
   "verify:image": "node scripts/verify-image-tab.mjs",
   "verify:bundle": "node scripts/verify-bundle.mjs",
-  "verify:align": "node scripts/verify-align.mjs"
+  "verify:align": "node scripts/verify-align.mjs",
+  "verify:render": "node scripts/verify-render.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

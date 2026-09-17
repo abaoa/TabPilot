@@ -1081,6 +1081,241 @@ function updateTransposeUI() {
   if (cr) cr.classList.toggle('active', capo !== 0);
 }
 
+/* ------------------------------------- Feature 22：演奏录音回放复盘 */
+
+/** 录音会话：{ recorder, stream, t0, timer }；null = 未在录音 */
+let recSession = null;
+/** 最近一次录音成果：{ url, env, dt, dur }；env 为 null 表示解不出 PCM，只能回放 */
+let lastTake = null;
+/** 最近一次复盘结果（供「跳到最差拍」复用） */
+let lastReview = null;
+/** 复盘帧长（秒）。10ms 一帧，足够分辨 20ms 级别的抢拖 */
+const REVIEW_DT = 0.01;
+/** 判定「弹准」的容差（秒） */
+const REVIEW_TOL = 0.05;
+
+/** 是否正在录音 */
+function isRecording() { return !!recSession; }
+
+/**
+ * 参考包络：用谱面拍点生成理想脉冲串。
+ * 谱面模式没有现成的「标准答案音频」，拍点本身就是标准答案——
+ * 每个拍点放一个衰减脉冲，再跟录音包络做互相关即可对齐。
+ */
+function buildRefEnv() {
+  if (!ref.times || !ref.times.length) return null;
+  const beatSec = ref.times.map((t) => t / 1000);
+  const totalSec = beatSec[beatSec.length - 1] + 1;
+  return {
+    env: window.TimingCore.impulseEnv(beatSec, REVIEW_DT, totalSec, 0.15),
+    beatSec,
+    totalSec,
+  };
+}
+
+/** 开始录音。只在用户点击时触发，jsdom 环境不会走到这里 */
+async function startRecording() {
+  if (isRecording()) return;
+  if (!ref.times || !ref.times.length) {
+    setHint('先载入谱面再录音——复盘要用谱面拍点当基准。');
+    return;
+  }
+  if (typeof MediaRecorder === 'undefined') {
+    setHint('当前环境不支持录音（MediaRecorder 不可用）。');
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+    let recTimer = null;
+    const chunks = [];
+    const rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      if (recTimer) clearInterval(recTimer);
+      finalizeTake(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }));
+    };
+
+    recSession = { recorder: rec, stream, t0: performance.now() };
+    rec.start();
+
+    const chip = $('recChip');
+    if (chip) chip.style.display = '';
+    const btn = $('btnRec');
+    if (btn) { btn.classList.add('active'); btn.textContent = '■ 停止录音'; }
+    recTimer = setInterval(() => {
+      const el = $('recTime');
+      if (el && recSession) {
+        el.textContent = ((performance.now() - recSession.t0) / 1000).toFixed(1) + 's';
+      }
+    }, 100);
+    recSession.timer = recTimer;
+    setHint('录音中：正常弹完这一遍，再点「■ 停止录音」。');
+  } catch (err) {
+    setHint('麦克风打不开：' + (err && err.message ? err.message : err));
+  }
+}
+
+/** 停止录音（真正的收尾在 recorder.onstop 里异步完成） */
+function stopRecording() {
+  if (!recSession) return;
+  if (recSession.timer) clearInterval(recSession.timer);
+  try { recSession.recorder.stop(); } catch (e) { /* 已停止则忽略 */ }
+  const chip = $('recChip');
+  if (chip) chip.style.display = 'none';
+  const btn = $('btnRec');
+  if (btn) { btn.classList.remove('active'); btn.textContent = '● 录音'; }
+  recSession = null;
+}
+
+/** 录音落地：生成可回放的 URL，并解出 PCM 求能量包络 */
+async function finalizeTake(blob) {
+  const url = URL.createObjectURL(blob);
+  let env = null;
+  let dur = 0;
+  let ctx = null;
+  try {
+    const ab = await blob.arrayBuffer();
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // decodeAudioData 会 detach 传入的 buffer，传副本以免影响后续使用
+    const buf = await ctx.decodeAudioData(ab.slice(0));
+    dur = buf.duration;
+    const hop = Math.max(1, Math.round(buf.sampleRate * REVIEW_DT));
+    env = window.TimingCore.normalizeEnv(
+      window.TimingCore.envelopeFromPcm(buf.getChannelData(0), hop)
+    );
+  } catch (err) {
+    console.warn('录音解码失败，只能回放不能分析', err);
+  } finally {
+    if (ctx && ctx.close) { try { ctx.close(); } catch (e) { /* 忽略 */ } }
+  }
+
+  if (lastTake && lastTake.url) URL.revokeObjectURL(lastTake.url);
+  lastTake = { url, env, dt: REVIEW_DT, dur };
+  const btn = $('btnReview');
+  if (btn) btn.disabled = !env;
+  setHint(env
+    ? '录音已存下（' + dur.toFixed(1) + 's），点「📈 复盘」看逐拍节奏偏差。'
+    : '录音已存下，但这种格式解不出 PCM，只能回放、做不了偏差分析。');
+}
+
+/** 复盘：把录音包络与谱面拍点对齐，给出每拍的抢/拖 */
+function reviewTake() {
+  if (!lastTake || !lastTake.env) {
+    setHint('还没有能分析的录音，先点「● 录音」录一遍。');
+    return;
+  }
+  const r = buildRefEnv();
+  if (!r) { setHint('谱面还没载入，没法复盘。'); return; }
+
+  const res = window.TimingCore.computeTimingDeviation(r.env, lastTake.env, r.beatSec, {
+    dt: REVIEW_DT,
+    toleranceSec: REVIEW_TOL,
+    maxLagSec: 0.8,
+    windowSec: 0.18,
+  });
+  lastReview = res;
+  renderReview(res);
+  const m = $('reviewModal');
+  if (m) m.style.display = 'flex';
+  setHint('复盘完成：平均偏差 ' + (res.meanAbs * 1000).toFixed(0)
+    + 'ms，准确率 ' + (res.accuracy * 100).toFixed(0) + '%。');
+}
+
+/** 渲染复盘面板：汇总数字 + 每拍偏差条 + 回放控件 */
+function renderReview(res) {
+  const stats = $('rvStats');
+  if (stats) {
+    stats.innerHTML = '';
+    const items = [
+      ['准确率', (res.accuracy * 100).toFixed(0) + '%'],
+      ['平均偏差', (res.meanAbs * 1000).toFixed(0) + 'ms'],
+      ['最大偏差', (res.maxAbs * 1000).toFixed(0) + 'ms'],
+      ['整段偏移', (res.offset * 1000).toFixed(0) + 'ms'],
+      ['有效拍', res.counted + '/' + res.beats.length],
+    ];
+    for (const it of items) {
+      const d = document.createElement('div');
+      d.className = 'pm-stat';
+      const b = document.createElement('b');
+      b.textContent = it[1];
+      const s = document.createElement('span');
+      s.textContent = it[0];
+      d.appendChild(b);
+      d.appendChild(s);
+      stats.appendChild(d);
+    }
+  }
+
+  const chart = $('rvChart');
+  if (chart) {
+    chart.innerHTML = '';
+    const scale = Math.max(res.maxAbs, REVIEW_TOL * 2);
+    for (const b of res.beats) {
+      const col = document.createElement('div');
+      col.className = 'rv-col';
+      col.title = '第 ' + (b.beat + 1) + ' 拍 · '
+        + (b.missed ? '漏弹'
+          : (b.deviation >= 0 ? '拖 ' : '抢 ') + Math.abs(b.deviation * 1000).toFixed(0) + 'ms');
+      const base = document.createElement('div');
+      base.className = 'rv-base';
+      col.appendChild(base);
+
+      const bar = document.createElement('i');
+      if (b.missed) {
+        bar.style.background = '#9aa5b8';
+        bar.style.top = '48%';
+        bar.style.height = '4%';
+      } else {
+        const ratio = Math.min(1, Math.abs(b.deviation) / scale);
+        bar.style.height = Math.max(2, ratio * 48) + '%';
+        bar.style.background = Math.abs(b.deviation) <= REVIEW_TOL
+          ? '#10b981'                                   // 准
+          : (b.deviation > 0 ? '#f59e0b' : '#378add');  // 橙=拖，蓝=抢
+        if (b.deviation >= 0) { bar.style.bottom = '50%'; bar.style.top = 'auto'; }
+        else { bar.style.top = '50%'; bar.style.bottom = 'auto'; }
+      }
+      col.appendChild(bar);
+      chart.appendChild(col);
+    }
+  }
+
+  const worst = $('rvWorst');
+  if (worst) {
+    if (res.worstBeat >= 0) {
+      const b = res.beats[res.worstBeat];
+      const ms = Math.abs((b ? b.deviation : 0) * 1000).toFixed(0);
+      worst.textContent = '偏差最大的是第 ' + (res.worstBeat + 1) + ' 拍（'
+        + (b && b.deviation > 0 ? '拖' : '抢') + ' ' + ms + 'ms），'
+        + '大约在第 ' + (Math.floor(res.worstBeat / 4) + 1) + ' 小节。';
+    } else {
+      worst.textContent = '这一遍没抓到有效拍点，可能是录音太轻或全程静音。';
+    }
+  }
+
+  const audio = $('rvAudio');
+  if (audio && lastTake && lastTake.url) audio.src = lastTake.url;
+}
+
+/** 关闭复盘面板（不清掉录音，方便反复查看） */
+function closeReview() {
+  const m = $('reviewModal');
+  if (m) m.style.display = 'none';
+  const a = $('rvAudio');
+  if (a) a.pause();
+}
+
+/** 把播放头跳到偏差最大的那一拍，方便针对性重练 */
+function jumpToWorst() {
+  if (!lastReview || lastReview.worstBeat < 0) { setHint('还没有最差拍可跳。'); return; }
+  if (!walkerInst || !engine || engine.name !== 'walker') runWalker();
+  if (walkerInst) walkerInst.seek(lastReview.worstBeat);
+  closeReview();
+  setHint('已跳到第 ' + (lastReview.worstBeat + 1) + ' 拍，重点练这一下。');
+}
+
 /* -------------------------------------------------------------------- UI */
 
 /** 绑定页面控件事件 */
@@ -1118,6 +1353,14 @@ function bindUI() {
   $('btnCapoUp').onclick = () => setCapo(capo + 1);
   $('btnCapoDown').onclick = () => setCapo(capo - 1);
   $('btnCapoReset').onclick = () => setCapo(0);
+
+  // 演奏录音回放复盘
+  $('btnRec').onclick = () => { if (isRecording()) stopRecording(); else startRecording(); };
+  $('btnReview').onclick = reviewTake;
+  $('btnReview').disabled = true;                  // 有录音后才可点
+  $('rvClose').onclick = closeReview;
+  $('rvClose2').onclick = closeReview;
+  $('rvJump').onclick = jumpToWorst;
 
   // A/B 循环（乐句循环练习）
   $('btnLoop').onclick = () => {

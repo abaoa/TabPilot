@@ -20,7 +20,8 @@
   "verify:bundle": "node scripts/verify-bundle.mjs",
   "verify:align": "node scripts/verify-align.mjs",
   "verify:render": "node scripts/verify-render.mjs",
-  "verify:chord": "node scripts/verify-chord.mjs"
+  "verify:chord": "node scripts/verify-chord.mjs",
+  "verify:timing": "node scripts/verify-timing.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

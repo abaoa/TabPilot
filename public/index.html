@@ -28,6 +28,49 @@
 <link rel="stylesheet" href="css/layout.css">
 <link rel="stylesheet" href="css/components.css">
 <script src="js/theme.js"></script>
+<!-- 演奏复盘面板的局部样式（避免改动共享的 components.css） -->
+<style>
+  .rv-chart {
+    display: flex; align-items: stretch; gap: 2px;
+    height: 108px; margin: 4px 0 6px; padding: 6px 4px;
+    border-top: 1px solid var(--line, #e5e7eb);
+    border-bottom: 1px solid var(--line, #e5e7eb);
+    overflow-x: auto;
+  }
+  .rv-col { position: relative; flex: 0 0 auto; width: 10px; height: 100%; }
+  .rv-col i { position: absolute; left: 0; right: 0; border-radius: 2px; min-height: 2px; }
+  .rv-base {
+    position: absolute; left: 0; right: 0; top: 50%;
+    height: 1px; background: var(--line, #e5e7eb); opacity: .9;
+  }
+  .rv-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--sub, #667085); }
+  .rv-legend s { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 3px; }
+
+  /* 复盘弹窗骨架（与图片谱模式保持同一套观感，此处内联以免改动共享 CSS） */
+  .modal {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(15,18,24,.5); padding: 20px;
+  }
+  .modal-card {
+    width: min(620px, 100%); max-height: 86vh; overflow: auto;
+    background: var(--panel, #fff); color: var(--ink, #1f2430);
+    border-radius: 14px; padding: 16px 18px 18px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.3);
+  }
+  .modal-head { display: flex; align-items: center; margin-bottom: 12px; }
+  .modal-head b { flex: 1 1 auto; font-size: 15px; }
+  .modal-head .x { border: none; background: transparent; font-size: 16px; cursor: pointer; color: inherit; }
+  .pm-stats { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .pm-stat {
+    flex: 1 1 110px; padding: 9px 10px; border-radius: 10px;
+    background: var(--line, #f1f3f7); text-align: center;
+  }
+  .pm-stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
+  .pm-stat span { font-size: 11.5px; color: var(--sub, #667085); }
+  .pm-sub { font-size: 12px; color: var(--sub, #667085); margin: 0 0 8px; line-height: 1.6; }
+  .pm-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+</style>
 </head>
 <body>
 
@@ -105,6 +148,13 @@
       <span class="chip">你弹 <b id="chordLive">—</b></span>
       <span class="led" id="chordLed" title="和弦匹配状态：绿=对上 红=弹错 灰=静音"></span>
     </div>
+
+    <div class="group">
+      <span class="glabel">复盘</span>
+      <button class="btn" id="btnRec" title="录下这一遍演奏，存到本地后可回放">● 录音</button>
+      <button class="btn" id="btnReview" title="把刚录的一遍和谱面拍点对齐，逐拍看节奏偏差">📈 复盘</button>
+      <span class="chip" id="recChip" style="display:none">录音 <b id="recTime">0.0s</b></span>
+    </div>
   </div>
 </header>
 
@@ -120,6 +170,31 @@
   </div>
 </main>
 
+<!-- 演奏复盘：把录音与谱面拍点对齐，逐拍显示抢/拖偏差 + 回放 -->
+<div class="modal" id="reviewModal" style="display:none" role="dialog" aria-modal="true" aria-label="演奏复盘">
+  <div class="modal-card">
+    <div class="modal-head">
+      <b>🎙 演奏复盘</b>
+      <button class="x" id="rvClose" title="关闭" aria-label="关闭">✕</button>
+    </div>
+    <div class="pm-stats" id="rvStats"></div>
+    <p class="pm-sub">每拍偏差：向上=拖拍（弹晚了），向下=抢拍（弹早了），灰=漏弹</p>
+    <div class="rv-chart" id="rvChart"></div>
+    <div class="rv-legend">
+      <span><s style="background:#10b981"></s>准（±50ms）</span>
+      <span><s style="background:#f59e0b"></s>拖拍</span>
+      <span><s style="background:#378add"></s>抢拍</span>
+      <span><s style="background:#9aa5b8"></s>漏弹</span>
+    </div>
+    <p class="pm-sub" id="rvWorst"></p>
+    <audio id="rvAudio" controls style="width:100%"></audio>
+    <div class="pm-actions">
+      <button class="btn sm" id="rvJump" title="把播放头跳到偏差最大的那一拍">↩ 跳到最差拍</button>
+      <button class="btn sm" id="rvClose2">关闭</button>
+    </div>
+  </div>
+</div>
+
 <footer class="app-footer">
   <div class="chip"><span class="led" id="led"></span><span id="modeText">待机</span></div>
   <div class="chip">当前小节 <b id="barNum">-</b></div>
@@ -133,6 +208,7 @@
 <script src="vendor/alphaTab.js"></script>
 <script src="js/settings.js"></script>
 <script src="js/chord-core.js"></script>
+<script src="js/timing-core.js"></script>
 <script src="js/app.js"></script>
 <script>
   'use strict';

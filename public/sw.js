@@ -12,7 +12,7 @@
 'use strict';
 
 /** 缓存版本号：改动外壳资源时必须递增 */
-const CACHE = 'tabpilot-v14';
+const CACHE = 'tabpilot-v15';
 
 /** 应用外壳：离线运行所需的最小资源集合 */
 const SHELL = [
@@ -25,6 +25,8 @@ const SHELL = [
   'js/settings.js',
   'js/app.js',
   'js/image-tab.js',
+  'js/chord-core.js',
+  'js/timing-core.js',
   'manifest.json',
   'icons/icon-512.png',
   'assets/demo-xihn.jpg',
